@@ -149,7 +149,6 @@ class _StoreScreenState extends State<StoreScreen> {
     );
   }
 
-  // ИСПРАВЛЕННЫЙ МЕТОД ПОВЫШЕНИЯ ПРИОРИТЕТА (работает)
   Future<void> _onUpgradePriority() async {
     final currentPriority = _shopData['priority'] ?? 1;
     if (currentPriority >= 5) {
@@ -209,30 +208,17 @@ class _StoreScreenState extends State<StoreScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          // Логотип для главного экрана
           Card(
             child: Padding(
               padding: const EdgeInsets.all(16),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text('Название магазина', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-                  const SizedBox(height: 8),
-                  TextFormField(
-                    initialValue: _shopData['name'] ?? '',
-                    decoration: const InputDecoration(border: OutlineInputBorder()),
-                    onChanged: (value) => _updateShop({'name': value}),
-                  ),
-                ],
-              ),
-            ),
-          ),
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text('Ссылка на логотип (URL)', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                  const Text('🖼️ Логотип для главного экрана', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 4),
+                  const Text('Это изображение будет показываться в карточках магазина на главном экране приложения.',
+                      style: TextStyle(fontSize: 12, color: Colors.grey)),
                   const SizedBox(height: 8),
                   TextFormField(
                     initialValue: imageUrl,
@@ -248,6 +234,107 @@ class _StoreScreenState extends State<StoreScreen> {
               ),
             ),
           ),
+          // Блок "Информация о магазине для пользователей"
+          Card(
+            color: Colors.blue.shade50,
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Row(
+                    children: [
+                      Icon(Icons.info_outline, color: Colors.blue),
+                      SizedBox(width: 8),
+                      Text('📋 Информация о магазине для пользователей',
+                          style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                    ],
+                  ),
+                  const SizedBox(height: 4),
+                  const Text('Эти данные увидят покупатели, когда нажмут на значок информации (i) в приложении.',
+                      style: TextStyle(fontSize: 12, color: Colors.grey)),
+                  const SizedBox(height: 16),
+                  // Название
+                  const Text('Название магазина', style: TextStyle(fontWeight: FontWeight.w600)),
+                  const SizedBox(height: 8),
+                  TextFormField(
+                    initialValue: _shopData['name'] ?? '',
+                    decoration: const InputDecoration(
+                      border: OutlineInputBorder(),
+                      hintText: 'Например: "Кофейня Арома"',
+                    ),
+                    onChanged: (value) => _updateShop({'name': value}),
+                  ),
+                  const SizedBox(height: 16),
+                  // Описание
+                  const Text('Описание магазина', style: TextStyle(fontWeight: FontWeight.w600)),
+                  const SizedBox(height: 8),
+                  TextFormField(
+                    initialValue: _shopData['description'] ?? '',
+                    decoration: const InputDecoration(
+                      border: OutlineInputBorder(),
+                      hintText: 'Расскажите о вашем магазине, особенностях, атмосфере',
+                    ),
+                    maxLines: 3,
+                    onChanged: (value) => _updateShop({'description': value}),
+                  ),
+                  const SizedBox(height: 16),
+                  // 🆕 Краткая скидка (для карточек)
+                  const Text('Краткая скидка (на карточке)', style: TextStyle(fontWeight: FontWeight.w600)),
+                  const SizedBox(height: 4),
+                  const Text('Показывается в карточке магазина на главном экране. Должна быть короткой, например: "-30% на джинсы".',
+                      style: TextStyle(fontSize: 12, color: Colors.grey)),
+                  const SizedBox(height: 8),
+                  TextFormField(
+                    initialValue: _shopData['shortDiscount'] ?? '',
+                    decoration: const InputDecoration(
+                      border: OutlineInputBorder(),
+                      hintText: '-30% на джинсы',
+                    ),
+                    onChanged: (value) => _updateShop({'shortDiscount': value}),
+                  ),
+                  const SizedBox(height: 16),
+                  // Подробное описание акции
+                  const Text('Подробное описание акции', style: TextStyle(fontWeight: FontWeight.w600)),
+                  const SizedBox(height: 4),
+                  const Text('Полный текст акции, который увидит пользователь в информационном окне.',
+                      style: TextStyle(fontSize: 12, color: Colors.grey)),
+                  const SizedBox(height: 8),
+                  TextFormField(
+                    initialValue: _shopData['discount'] ?? '',
+                    decoration: const InputDecoration(
+                      border: OutlineInputBorder(),
+                      hintText: 'Например: "Скидка 30% на джинсы из прошлой коллекции до 31 июля"',
+                    ),
+                    maxLines: 3,
+                    onChanged: (value) => _updateShop({'discount': value}),
+                  ),
+                  const SizedBox(height: 16),
+                  // Фото для подробной информации
+                  const Text('🖼️ Фото для подробной информации', style: TextStyle(fontWeight: FontWeight.w600)),
+                  const SizedBox(height: 4),
+                  const Text('Это изображение будет показано в полном информационном окне (большое, привлекательное).',
+                      style: TextStyle(fontSize: 12, color: Colors.grey)),
+                  const SizedBox(height: 8),
+                  TextFormField(
+                    initialValue: _shopData['infoImageUrl'] ?? '',
+                    decoration: const InputDecoration(
+                      border: OutlineInputBorder(),
+                      hintText: 'https://... (ссылка на красивое фото магазина)',
+                    ),
+                    onChanged: (value) => _updateShop({'infoImageUrl': value}),
+                  ),
+                  if ((_shopData['infoImageUrl'] ?? '').isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 8),
+                      child: Image.network(_shopData['infoImageUrl'], height: 120, fit: BoxFit.cover,
+                          errorBuilder: (_, __, ___) => const Icon(Icons.broken_image)),
+                    ),
+                ],
+              ),
+            ),
+          ),
+          // Приоритет
           Card(
             child: Padding(
               padding: const EdgeInsets.all(16),
@@ -262,7 +349,7 @@ class _StoreScreenState extends State<StoreScreen> {
                       const SizedBox(width: 12),
                       Expanded(
                         child: Text(
-                          'Чем выше приоритет, тем чаще ваши акции предлагаются пользователям. Повысьте приоритет, чтобы увеличить поток клиентов.',
+                          'Чем выше приоритет, тем чаще ваши акции предлагаются пользователям.',
                           style: TextStyle(fontSize: 12, color: Colors.grey[700]),
                         ),
                       ),
@@ -279,6 +366,7 @@ class _StoreScreenState extends State<StoreScreen> {
               ),
             ),
           ),
+          // Ближайшая акция (календарь)
           Card(
             child: Padding(
               padding: const EdgeInsets.all(16),
@@ -288,14 +376,15 @@ class _StoreScreenState extends State<StoreScreen> {
                   const Text('Ближайшая акция', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
                   const SizedBox(height: 8),
                   if (_nearestPromotion == null)
-                    Text('Нет активных акций. Создайте акцию в календаре.', style: TextStyle(color: Colors.grey[600]))
+                    Text('Нет активных акций.', style: TextStyle(color: Colors.grey[600]))
                   else
                     Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(_nearestPromotion!['title'], style: const TextStyle(fontSize: 16)),
                         const SizedBox(height: 4),
-                        Text('${_nearestPromotion!['discount']} — действительна с ${DateFormat('dd.MM.yyyy').format(_nearestPromotion!['startDate'])} по ${DateFormat('dd.MM.yyyy').format(_nearestPromotion!['endDate'])}', style: const TextStyle(fontSize: 12)),
+                        Text('${_nearestPromotion!['discount']} — с ${DateFormat('dd.MM.yyyy').format(_nearestPromotion!['startDate'])} по ${DateFormat('dd.MM.yyyy').format(_nearestPromotion!['endDate'])}',
+                            style: const TextStyle(fontSize: 12)),
                       ],
                     ),
                   const SizedBox(height: 12),
@@ -307,6 +396,7 @@ class _StoreScreenState extends State<StoreScreen> {
               ),
             ),
           ),
+          // Статистика
           Card(
             child: Padding(
               padding: const EdgeInsets.all(16),
@@ -341,6 +431,7 @@ class _StoreScreenState extends State<StoreScreen> {
               ),
             ),
           ),
+          // Последнее уведомление
           Card(
             child: Padding(
               padding: const EdgeInsets.all(16),
@@ -350,7 +441,7 @@ class _StoreScreenState extends State<StoreScreen> {
                   const Text('Последнее уведомление', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
                   const SizedBox(height: 8),
                   if (_lastNotification == null)
-                    Text('У вас пока нет уведомлений. Создайте уведомление в разделе статистики.', style: TextStyle(color: Colors.grey[600]))
+                    Text('Нет уведомлений.', style: TextStyle(color: Colors.grey[600]))
                   else
                     Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -359,7 +450,8 @@ class _StoreScreenState extends State<StoreScreen> {
                         const SizedBox(height: 4),
                         Text(_lastNotification!['body'], style: const TextStyle(fontSize: 12)),
                         const SizedBox(height: 4),
-                        Text(DateFormat('dd.MM.yyyy HH:mm').format(_lastNotification!['timestamp']), style: const TextStyle(fontSize: 10, color: Colors.grey)),
+                        Text(DateFormat('dd.MM.yyyy HH:mm').format(_lastNotification!['timestamp']),
+                            style: const TextStyle(fontSize: 10, color: Colors.grey)),
                       ],
                     ),
                   const SizedBox(height: 12),
@@ -371,6 +463,7 @@ class _StoreScreenState extends State<StoreScreen> {
               ),
             ),
           ),
+          // Как это работает
           Card(
             child: Padding(
               padding: const EdgeInsets.all(16),
@@ -381,9 +474,9 @@ class _StoreScreenState extends State<StoreScreen> {
                   const SizedBox(height: 8),
                   const Text(
                     '1. Пользователь проходит путь из 5 магазинов, сканируя QR-коды.\n'
-                    '2. Каждая активация вашей акции приносит вам клиента (первые продажи) или повторную продажу.\n'
-                    '3. Вы можете планировать акции в календаре, управлять баннерами и отправлять уведомления.\n'
-                    '4. Чем выше приоритет, тем чаще ваша акция предлагается пользователю в игровом выборе.',
+                    '2. Каждая активация вашей акции приносит вам клиента.\n'
+                    '3. Вы можете планировать акции, управлять баннерами и отправлять уведомления.\n'
+                    '4. Чем выше приоритет, тем чаще ваша акция предлагается.',
                     style: TextStyle(fontSize: 12),
                   ),
                 ],
