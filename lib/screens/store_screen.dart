@@ -19,6 +19,15 @@ class _StoreScreenState extends State<StoreScreen> {
   String? _storeId;
   bool _loading = true;
   Map<String, dynamic> _shopData = {};
+
+  // Контроллеры для редактируемых полей
+  final _nameController = TextEditingController();
+  final _imageUrlController = TextEditingController();
+  final _descriptionController = TextEditingController();
+  final _shortDiscountController = TextEditingController();
+  final _discountController = TextEditingController();
+  final _infoImageUrlController = TextEditingController();
+
   int _todayActivations = 0;
   int _newClientsWeek = 0;
   Map<String, dynamic>? _nearestPromotion;
@@ -28,6 +37,17 @@ class _StoreScreenState extends State<StoreScreen> {
   void initState() {
     super.initState();
     _getStoreId();
+  }
+
+  @override
+  void dispose() {
+    _nameController.dispose();
+    _imageUrlController.dispose();
+    _descriptionController.dispose();
+    _shortDiscountController.dispose();
+    _discountController.dispose();
+    _infoImageUrlController.dispose();
+    super.dispose();
   }
 
   Future<void> _getStoreId() async {
@@ -55,6 +75,14 @@ class _StoreScreenState extends State<StoreScreen> {
     final doc = await _firestore.collection('shops').doc(_storeId).get();
     if (doc.exists) {
       _shopData = doc.data() as Map<String, dynamic>;
+      // Заполняем контроллеры актуальными данными
+      _nameController.text = _shopData['name'] ?? '';
+      _imageUrlController.text = _shopData['imageUrl'] ?? '';
+      _descriptionController.text = _shopData['description'] ?? '';
+      _shortDiscountController.text = _shopData['shortDiscount'] ?? '';
+      _discountController.text = _shopData['discount'] ?? '';
+      _infoImageUrlController.text = _shopData['infoImageUrl'] ?? '';
+      if (mounted) setState(() {});
     }
   }
 
@@ -121,10 +149,21 @@ class _StoreScreenState extends State<StoreScreen> {
     }
   }
 
-  Future<void> _updateShop(Map<String, dynamic> data) async {
-    await _firestore.collection('shops').doc(_storeId).update(data);
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Сохранено')));
-    _shopData.addAll(data);
+  // Единая кнопка сохранения
+  Future<void> _saveAllChanges() async {
+    final updatedData = {
+      'name': _nameController.text.trim(),
+      'imageUrl': _imageUrlController.text.trim(),
+      'description': _descriptionController.text.trim(),
+      'shortDiscount': _shortDiscountController.text.trim(),
+      'discount': _discountController.text.trim(),
+      'infoImageUrl': _infoImageUrlController.text.trim(),
+    };
+
+    await _firestore.collection('shops').doc(_storeId).update(updatedData);
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Все изменения сохранены')));
+    // Обновляем локальные данные, чтобы UI отобразил новые значения (например, фото)
+    _shopData.addAll(updatedData);
     setState(() {});
   }
 
@@ -201,7 +240,6 @@ class _StoreScreenState extends State<StoreScreen> {
     }
 
     final priority = _shopData['priority'] ?? 1;
-    final imageUrl = _shopData['imageUrl'] ?? '';
 
     return SingleChildScrollView(
       padding: const EdgeInsets.all(16),
@@ -221,14 +259,14 @@ class _StoreScreenState extends State<StoreScreen> {
                       style: TextStyle(fontSize: 12, color: Colors.grey)),
                   const SizedBox(height: 8),
                   TextFormField(
-                    initialValue: imageUrl,
+                    controller: _imageUrlController,
                     decoration: const InputDecoration(border: OutlineInputBorder(), hintText: 'https://...'),
-                    onChanged: (value) => _updateShop({'imageUrl': value}),
                   ),
-                  if (imageUrl.isNotEmpty)
+                  if (_imageUrlController.text.isNotEmpty)
                     Padding(
                       padding: const EdgeInsets.only(top: 8),
-                      child: Image.network(imageUrl, height: 80, errorBuilder: (_, __, ___) => const Icon(Icons.broken_image)),
+                      child: Image.network(_imageUrlController.text, height: 80,
+                          errorBuilder: (_, __, ___) => const Icon(Icons.broken_image)),
                     ),
                 ],
               ),
@@ -258,40 +296,37 @@ class _StoreScreenState extends State<StoreScreen> {
                   const Text('Название магазина', style: TextStyle(fontWeight: FontWeight.w600)),
                   const SizedBox(height: 8),
                   TextFormField(
-                    initialValue: _shopData['name'] ?? '',
+                    controller: _nameController,
                     decoration: const InputDecoration(
                       border: OutlineInputBorder(),
                       hintText: 'Например: "Кофейня Арома"',
                     ),
-                    onChanged: (value) => _updateShop({'name': value}),
                   ),
                   const SizedBox(height: 16),
                   // Описание
                   const Text('Описание магазина', style: TextStyle(fontWeight: FontWeight.w600)),
                   const SizedBox(height: 8),
                   TextFormField(
-                    initialValue: _shopData['description'] ?? '',
+                    controller: _descriptionController,
                     decoration: const InputDecoration(
                       border: OutlineInputBorder(),
                       hintText: 'Расскажите о вашем магазине, особенностях, атмосфере',
                     ),
                     maxLines: 3,
-                    onChanged: (value) => _updateShop({'description': value}),
                   ),
                   const SizedBox(height: 16),
-                  // 🆕 Краткая скидка (для карточек)
+                  // Краткая скидка (для карточек)
                   const Text('Краткая скидка (на карточке)', style: TextStyle(fontWeight: FontWeight.w600)),
                   const SizedBox(height: 4),
                   const Text('Показывается в карточке магазина на главном экране. Должна быть короткой, например: "-30% на джинсы".',
                       style: TextStyle(fontSize: 12, color: Colors.grey)),
                   const SizedBox(height: 8),
                   TextFormField(
-                    initialValue: _shopData['shortDiscount'] ?? '',
+                    controller: _shortDiscountController,
                     decoration: const InputDecoration(
                       border: OutlineInputBorder(),
                       hintText: '-30% на джинсы',
                     ),
-                    onChanged: (value) => _updateShop({'shortDiscount': value}),
                   ),
                   const SizedBox(height: 16),
                   // Подробное описание акции
@@ -301,13 +336,12 @@ class _StoreScreenState extends State<StoreScreen> {
                       style: TextStyle(fontSize: 12, color: Colors.grey)),
                   const SizedBox(height: 8),
                   TextFormField(
-                    initialValue: _shopData['discount'] ?? '',
+                    controller: _discountController,
                     decoration: const InputDecoration(
                       border: OutlineInputBorder(),
                       hintText: 'Например: "Скидка 30% на джинсы из прошлой коллекции до 31 июля"',
                     ),
                     maxLines: 3,
-                    onChanged: (value) => _updateShop({'discount': value}),
                   ),
                   const SizedBox(height: 16),
                   // Фото для подробной информации
@@ -317,20 +351,36 @@ class _StoreScreenState extends State<StoreScreen> {
                       style: TextStyle(fontSize: 12, color: Colors.grey)),
                   const SizedBox(height: 8),
                   TextFormField(
-                    initialValue: _shopData['infoImageUrl'] ?? '',
+                    controller: _infoImageUrlController,
                     decoration: const InputDecoration(
                       border: OutlineInputBorder(),
                       hintText: 'https://... (ссылка на красивое фото магазина)',
                     ),
-                    onChanged: (value) => _updateShop({'infoImageUrl': value}),
                   ),
-                  if ((_shopData['infoImageUrl'] ?? '').isNotEmpty)
+                  if (_infoImageUrlController.text.isNotEmpty)
                     Padding(
                       padding: const EdgeInsets.only(top: 8),
-                      child: Image.network(_shopData['infoImageUrl'], height: 120, fit: BoxFit.cover,
+                      child: Image.network(_infoImageUrlController.text, height: 120, fit: BoxFit.cover,
                           errorBuilder: (_, __, ___) => const Icon(Icons.broken_image)),
                     ),
                 ],
+              ),
+            ),
+          ),
+          // Кнопка сохранения
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 16),
+            child: Center(
+              child: ElevatedButton.icon(
+                onPressed: _saveAllChanges,
+                icon: const Icon(Icons.save),
+                label: const Text('Сохранить изменения'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF6C63FF),
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 14),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
+                ),
               ),
             ),
           ),
