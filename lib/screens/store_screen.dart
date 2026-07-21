@@ -27,6 +27,10 @@ class _StoreScreenState extends State<StoreScreen> {
   final _shortDiscountController = TextEditingController();
   final _discountController = TextEditingController();
   final _infoImageUrlController = TextEditingController();
+  final _mapXController = TextEditingController();
+  final _mapYController = TextEditingController();
+  final _mapWidthController = TextEditingController();   // 🆕
+  final _mapHeightController = TextEditingController();  // 🆕
 
   int _todayActivations = 0;
   int _newClientsWeek = 0;
@@ -47,6 +51,10 @@ class _StoreScreenState extends State<StoreScreen> {
     _shortDiscountController.dispose();
     _discountController.dispose();
     _infoImageUrlController.dispose();
+    _mapXController.dispose();
+    _mapYController.dispose();
+    _mapWidthController.dispose();
+    _mapHeightController.dispose();
     super.dispose();
   }
 
@@ -82,6 +90,10 @@ class _StoreScreenState extends State<StoreScreen> {
       _shortDiscountController.text = _shopData['shortDiscount'] ?? '';
       _discountController.text = _shopData['discount'] ?? '';
       _infoImageUrlController.text = _shopData['infoImageUrl'] ?? '';
+      _mapXController.text = (_shopData['mapX'] ?? 0.5).toString();
+      _mapYController.text = (_shopData['mapY'] ?? 0.5).toString();
+      _mapWidthController.text = (_shopData['mapWidth'] ?? 0.1).toString();
+      _mapHeightController.text = (_shopData['mapHeight'] ?? 0.1).toString();
       if (mounted) setState(() {});
     }
   }
@@ -158,6 +170,10 @@ class _StoreScreenState extends State<StoreScreen> {
       'shortDiscount': _shortDiscountController.text.trim(),
       'discount': _discountController.text.trim(),
       'infoImageUrl': _infoImageUrlController.text.trim(),
+      'mapX': double.tryParse(_mapXController.text) ?? 0.5,
+      'mapY': double.tryParse(_mapYController.text) ?? 0.5,
+      'mapWidth': double.tryParse(_mapWidthController.text) ?? 0.1,
+      'mapHeight': double.tryParse(_mapHeightController.text) ?? 0.1,
     };
 
     await _firestore.collection('shops').doc(_storeId).update(updatedData);
@@ -363,6 +379,51 @@ class _StoreScreenState extends State<StoreScreen> {
                       child: Image.network(_infoImageUrlController.text, height: 120, fit: BoxFit.cover,
                           errorBuilder: (_, __, ___) => const Icon(Icons.broken_image)),
                     ),
+                  const SizedBox(height: 16),
+                  // Координаты и размеры для карты
+                  const Text('📍 Расположение на карте ТЦ', style: TextStyle(fontWeight: FontWeight.w600)),
+                  const SizedBox(height: 4),
+                  const Text('Координаты центра магазина (0.0 - 1.0)', style: TextStyle(fontSize: 12, color: Colors.grey)),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextFormField(
+                          controller: _mapXController,
+                          decoration: const InputDecoration(labelText: 'X', border: OutlineInputBorder()),
+                          keyboardType: TextInputType.numberWithOptions(decimal: true),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: TextFormField(
+                          controller: _mapYController,
+                          decoration: const InputDecoration(labelText: 'Y', border: OutlineInputBorder()),
+                          keyboardType: TextInputType.numberWithOptions(decimal: true),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextFormField(
+                          controller: _mapWidthController,
+                          decoration: const InputDecoration(labelText: 'Ширина (0..1)', border: OutlineInputBorder()),
+                          keyboardType: TextInputType.numberWithOptions(decimal: true),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: TextFormField(
+                          controller: _mapHeightController,
+                          decoration: const InputDecoration(labelText: 'Высота (0..1)', border: OutlineInputBorder()),
+                          keyboardType: TextInputType.numberWithOptions(decimal: true),
+                        ),
+                      ),
+                    ],
+                  ),
                 ],
               ),
             ),
