@@ -2,9 +2,13 @@ import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:intl/intl.dart';
+import 'dart:math' as math;
 import 'promotions_screen.dart';
 import 'stats_screen.dart';
 
+// ----------------------------------------------------------------------
+// ОСНОВНОЙ ЭКРАН МАГАЗИНА (StoreScreen)
+// ----------------------------------------------------------------------
 class StoreScreen extends StatefulWidget {
   final Function(int) onTabSelected;
   const StoreScreen({Key? key, required this.onTabSelected}) : super(key: key);
@@ -20,18 +24,25 @@ class _StoreScreenState extends State<StoreScreen> {
   bool _loading = true;
   Map<String, dynamic> _shopData = {};
 
-  // Контроллеры для редактируемых полей
+  // Текстовые контроллеры
   final _nameController = TextEditingController();
   final _imageUrlController = TextEditingController();
   final _descriptionController = TextEditingController();
   final _shortDiscountController = TextEditingController();
   final _discountController = TextEditingController();
   final _infoImageUrlController = TextEditingController();
+
+  // Координаты на карте
   final _mapXController = TextEditingController();
   final _mapYController = TextEditingController();
-  final _mapWidthController = TextEditingController();   // 🆕
-  final _mapHeightController = TextEditingController();  // 🆕
+  final _mapWidthController = TextEditingController();
+  final _mapHeightController = TextEditingController();
 
+  // Контроллеры трансформаций (матрицы 4x4)
+  final TransformationController _logoTransformController = TransformationController();
+  final TransformationController _infoImageTransformController = TransformationController();
+
+  // Статистика
   int _todayActivations = 0;
   int _newClientsWeek = 0;
   Map<String, dynamic>? _nearestPromotion;
@@ -55,6 +66,8 @@ class _StoreScreenState extends State<StoreScreen> {
     _mapYController.dispose();
     _mapWidthController.dispose();
     _mapHeightController.dispose();
+    _logoTransformController.dispose();
+    _infoImageTransformController.dispose();
     super.dispose();
   }
 
@@ -83,7 +96,6 @@ class _StoreScreenState extends State<StoreScreen> {
     final doc = await _firestore.collection('shops').doc(_storeId).get();
     if (doc.exists) {
       _shopData = doc.data() as Map<String, dynamic>;
-      // Заполняем контроллеры актуальными данными
       _nameController.text = _shopData['name'] ?? '';
       _imageUrlController.text = _shopData['imageUrl'] ?? '';
       _descriptionController.text = _shopData['description'] ?? '';
@@ -94,7 +106,19 @@ class _StoreScreenState extends State<StoreScreen> {
       _mapYController.text = (_shopData['mapY'] ?? 0.5).toString();
       _mapWidthController.text = (_shopData['mapWidth'] ?? 0.1).toString();
       _mapHeightController.text = (_shopData['mapHeight'] ?? 0.1).toString();
-      if (mounted) setState(() {});
+
+      _restoreTransform(_logoTransformController, _shopData['imageTransform']);
+      _restoreTransform(_infoImageTransformController, _shopData['infoImageTransform']);
+    }
+    if (mounted) setState(() {});
+  }
+
+  void _restoreTransform(TransformationController controller, dynamic raw) {
+    if (raw is List && raw.length == 16) {
+      final matrix = Matrix4.fromList(raw.cast<double>());
+      controller.value = matrix;
+    } else {
+      controller.value = Matrix4.identity();
     }
   }
 
@@ -161,7 +185,6 @@ class _StoreScreenState extends State<StoreScreen> {
     }
   }
 
-  // Единая кнопка сохранения
   Future<void> _saveAllChanges() async {
     final updatedData = {
       'name': _nameController.text.trim(),
@@ -174,34 +197,55 @@ class _StoreScreenState extends State<StoreScreen> {
       'mapY': double.tryParse(_mapYController.text) ?? 0.5,
       'mapWidth': double.tryParse(_mapWidthController.text) ?? 0.1,
       'mapHeight': double.tryParse(_mapHeightController.text) ?? 0.1,
+      'imageTransform': _logoTransformController.value.storage.toList(),
+      'infoImageTransform': _infoImageTransformController.value.storage.toList(),
     };
 
     await _firestore.collection('shops').doc(_storeId).update(updatedData);
     ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Все изменения сохранены')));
-    // Обновляем локальные данные, чтобы UI отобразил новые значения (например, фото)
     _shopData.addAll(updatedData);
     setState(() {});
   }
 
-  void _goToCalendar() {
-    Navigator.push(
-      context,
-      MaterialPageRoute(builder: (context) => const PromotionsScreen()),
+  // ==================== НОВЫЙ РЕДАКТОР ИЗОБРАЖЕНИЯ (МАТЕМАТИЧЕСКИ ТОЧНЫЙ) ====================
+  Future<void> _openImageEditor({
+    required String title,
+    required TransformationController controller,
+    required String imageUrl,
+  }) async {
+    final Rect? cropRect = await showDialog<Rect>(
+      context: context,
+      builder: (ctx) => _ImageEditorDialog(
+        title: title,
+        imageUrl: imageUrl,
+        iconWidth: 130,
+        iconHeight: 100,
+      ),
     );
+
+    if (cropRect != null && mounted) {
+      final scaleX = 130.0 / cropRect.width;
+      final scaleY = 100.0 / cropRect.height;
+      final scale = scaleX < scaleY ? scaleX : scaleY;
+      final tx = -cropRect.left * scale;
+      final ty = -cropRect.top * scale;
+      final matrix = Matrix4.identity()
+        ..scale(scale)
+        ..translate(tx / scale, ty / scale);
+      controller.value = matrix;
+    }
+  }
+
+  void _goToCalendar() {
+    Navigator.push(context, MaterialPageRoute(builder: (_) => const PromotionsScreen()));
   }
 
   void _goToStats() {
-    Navigator.push(
-      context,
-      MaterialPageRoute(builder: (context) => const StatsScreen()),
-    );
+    Navigator.push(context, MaterialPageRoute(builder: (_) => const StatsScreen()));
   }
 
   void _goToNotifications() {
-    Navigator.push(
-      context,
-      MaterialPageRoute(builder: (context) => const StatsScreen(initialTabIndex: 2)),
-    );
+    Navigator.push(context, MaterialPageRoute(builder: (_) => const StatsScreen(initialTabIndex: 2)));
   }
 
   Future<void> _onUpgradePriority() async {
@@ -212,21 +256,17 @@ class _StoreScreenState extends State<StoreScreen> {
     }
     final confirm = await showDialog<bool>(
       context: context,
-      builder: (context) => AlertDialog(
+      builder: (ctx) => AlertDialog(
         title: const Text('Повысить приоритет'),
-        content: Text('Ваш текущий приоритет: $currentPriority\n'
-            'Повысить до ${currentPriority + 1} за 5000 руб.?\n'
-            '(В боевой версии здесь будет платёжный шлюз)'),
+        content: Text('Ваш текущий приоритет: $currentPriority\nПовысить до ${currentPriority + 1} за 5000 руб.?\n(В боевой версии здесь будет платёжный шлюз)'),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Отмена')),
-          ElevatedButton(onPressed: () => Navigator.pop(context, true), child: const Text('Оплатить')),
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Отмена')),
+          ElevatedButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Оплатить')),
         ],
       ),
     );
     if (confirm == true) {
-      await _firestore.collection('shops').doc(_storeId).update({
-        'priority': currentPriority + 1,
-      });
+      await _firestore.collection('shops').doc(_storeId).update({'priority': currentPriority + 1});
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Приоритет повышен!')));
         setState(() => _shopData['priority'] = currentPriority + 1);
@@ -236,9 +276,7 @@ class _StoreScreenState extends State<StoreScreen> {
 
   @override
   Widget build(BuildContext context) {
-    if (_loading) {
-      return const Center(child: CircularProgressIndicator());
-    }
+    if (_loading) return const Center(child: CircularProgressIndicator());
     if (_storeId == null) {
       return Center(
         child: Column(
@@ -246,10 +284,7 @@ class _StoreScreenState extends State<StoreScreen> {
           children: [
             const Text('Не удалось определить ваш магазин. Обратитесь к администратору.'),
             const SizedBox(height: 16),
-            ElevatedButton(
-              onPressed: () => FirebaseAuth.instance.signOut(),
-              child: const Text('Выйти'),
-            ),
+            ElevatedButton(onPressed: () => FirebaseAuth.instance.signOut(), child: const Text('Выйти')),
           ],
         ),
       );
@@ -278,17 +313,41 @@ class _StoreScreenState extends State<StoreScreen> {
                     controller: _imageUrlController,
                     decoration: const InputDecoration(border: OutlineInputBorder(), hintText: 'https://...'),
                   ),
-                  if (_imageUrlController.text.isNotEmpty)
-                    Padding(
-                      padding: const EdgeInsets.only(top: 8),
-                      child: Image.network(_imageUrlController.text, height: 80,
-                          errorBuilder: (_, __, ___) => const Icon(Icons.broken_image)),
-                    ),
+                  const SizedBox(height: 12),
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      SizedBox(
+                        width: 130,
+                        height: 100,
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(12),
+                          child: _imageUrlController.text.isNotEmpty
+                              ? Transform(
+                                  transform: _logoTransformController.value,
+                                  child: Image.network(_imageUrlController.text, fit: BoxFit.cover,
+                                      errorBuilder: (_, __, ___) => Container(color: Colors.grey[200], child: const Icon(Icons.broken_image))))
+                              : Container(color: Colors.grey[200], child: const Icon(Icons.image)),
+                        ),
+                      ),
+                      const SizedBox(width: 16),
+                      ElevatedButton.icon(
+                        onPressed: () => _openImageEditor(
+                          title: 'Редактировать логотип',
+                          controller: _logoTransformController,
+                          imageUrl: _imageUrlController.text,
+                        ),
+                        icon: const Icon(Icons.edit),
+                        label: const Text('Редактировать'),
+                      ),
+                    ],
+                  ),
                 ],
               ),
             ),
           ),
-          // Блок "Информация о магазине для пользователей"
+
+          // Информация о магазине для пользователей
           Card(
             color: Colors.blue.shade50,
             child: Padding(
@@ -308,89 +367,94 @@ class _StoreScreenState extends State<StoreScreen> {
                   const Text('Эти данные увидят покупатели, когда нажмут на значок информации (i) в приложении.',
                       style: TextStyle(fontSize: 12, color: Colors.grey)),
                   const SizedBox(height: 16),
-                  // Название
                   const Text('Название магазина', style: TextStyle(fontWeight: FontWeight.w600)),
                   const SizedBox(height: 8),
                   TextFormField(
                     controller: _nameController,
-                    decoration: const InputDecoration(
-                      border: OutlineInputBorder(),
-                      hintText: 'Например: "Кофейня Арома"',
-                    ),
+                    decoration: const InputDecoration(border: OutlineInputBorder(), hintText: 'Например: "Кофейня Арома"'),
                   ),
                   const SizedBox(height: 16),
-                  // Описание
                   const Text('Описание магазина', style: TextStyle(fontWeight: FontWeight.w600)),
                   const SizedBox(height: 8),
                   TextFormField(
                     controller: _descriptionController,
-                    decoration: const InputDecoration(
-                      border: OutlineInputBorder(),
-                      hintText: 'Расскажите о вашем магазине, особенностях, атмосфере',
-                    ),
+                    decoration: const InputDecoration(border: OutlineInputBorder(), hintText: 'Расскажите о вашем магазине, особенностях, атмосфере'),
                     maxLines: 3,
                   ),
                   const SizedBox(height: 16),
-                  // Краткая скидка (для карточек)
                   const Text('Краткая скидка (на карточке)', style: TextStyle(fontWeight: FontWeight.w600)),
-                  const SizedBox(height: 4),
-                  const Text('Показывается в карточке магазина на главном экране. Должна быть короткой, например: "-30% на джинсы".',
-                      style: TextStyle(fontSize: 12, color: Colors.grey)),
                   const SizedBox(height: 8),
                   TextFormField(
                     controller: _shortDiscountController,
-                    decoration: const InputDecoration(
-                      border: OutlineInputBorder(),
-                      hintText: '-30% на джинсы',
-                    ),
+                    decoration: const InputDecoration(border: OutlineInputBorder(), hintText: '-30% на джинсы'),
                   ),
                   const SizedBox(height: 16),
-                  // Подробное описание акции
                   const Text('Подробное описание акции', style: TextStyle(fontWeight: FontWeight.w600)),
-                  const SizedBox(height: 4),
-                  const Text('Полный текст акции, который увидит пользователь в информационном окне.',
-                      style: TextStyle(fontSize: 12, color: Colors.grey)),
                   const SizedBox(height: 8),
                   TextFormField(
                     controller: _discountController,
-                    decoration: const InputDecoration(
-                      border: OutlineInputBorder(),
-                      hintText: 'Например: "Скидка 30% на джинсы из прошлой коллекции до 31 июля"',
-                    ),
+                    decoration: const InputDecoration(border: OutlineInputBorder(), hintText: 'Например: "Скидка 30% на джинсы из прошлой коллекции до 31 июля"'),
                     maxLines: 3,
                   ),
                   const SizedBox(height: 16),
-                  // Фото для подробной информации
                   const Text('🖼️ Фото для подробной информации', style: TextStyle(fontWeight: FontWeight.w600)),
                   const SizedBox(height: 4),
-                  const Text('Это изображение будет показано в полном информационном окне (большое, привлекательное).',
+                  const Text('Это изображение будет показано в полном информационном окне.',
                       style: TextStyle(fontSize: 12, color: Colors.grey)),
                   const SizedBox(height: 8),
                   TextFormField(
                     controller: _infoImageUrlController,
-                    decoration: const InputDecoration(
-                      border: OutlineInputBorder(),
-                      hintText: 'https://... (ссылка на красивое фото магазина)',
-                    ),
+                    decoration: const InputDecoration(border: OutlineInputBorder(), hintText: 'https://...'),
                   ),
-                  if (_infoImageUrlController.text.isNotEmpty)
-                    Padding(
-                      padding: const EdgeInsets.only(top: 8),
-                      child: Image.network(_infoImageUrlController.text, height: 120, fit: BoxFit.cover,
-                          errorBuilder: (_, __, ___) => const Icon(Icons.broken_image)),
-                    ),
-                  const SizedBox(height: 16),
-                  // Координаты и размеры для карты
-                  const Text('📍 Расположение на карте ТЦ', style: TextStyle(fontWeight: FontWeight.w600)),
-                  const SizedBox(height: 4),
-                  const Text('Координаты центра магазина (0.0 - 1.0)', style: TextStyle(fontSize: 12, color: Colors.grey)),
+                  const SizedBox(height: 12),
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      SizedBox(
+                        width: 130,
+                        height: 100,
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(12),
+                          child: _infoImageUrlController.text.isNotEmpty
+                              ? Transform(
+                                  transform: _infoImageTransformController.value,
+                                  child: Image.network(_infoImageUrlController.text, fit: BoxFit.cover,
+                                      errorBuilder: (_, __, ___) => Container(color: Colors.grey[200], child: const Icon(Icons.broken_image))))
+                              : Container(color: Colors.grey[200], child: const Icon(Icons.image)),
+                        ),
+                      ),
+                      const SizedBox(width: 16),
+                      ElevatedButton.icon(
+                        onPressed: () => _openImageEditor(
+                          title: 'Редактировать фото для информации',
+                          controller: _infoImageTransformController,
+                          imageUrl: _infoImageUrlController.text,
+                        ),
+                        icon: const Icon(Icons.edit),
+                        label: const Text('Редактировать'),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+
+          // Координаты на карте
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('📍 Позиция на карте ТЦ', style: TextStyle(fontWeight: FontWeight.w600)),
                   const SizedBox(height: 8),
                   Row(
                     children: [
                       Expanded(
                         child: TextFormField(
                           controller: _mapXController,
-                          decoration: const InputDecoration(labelText: 'X', border: OutlineInputBorder()),
+                          decoration: const InputDecoration(labelText: 'X (0.0 - 1.0)'),
                           keyboardType: TextInputType.numberWithOptions(decimal: true),
                         ),
                       ),
@@ -398,19 +462,19 @@ class _StoreScreenState extends State<StoreScreen> {
                       Expanded(
                         child: TextFormField(
                           controller: _mapYController,
-                          decoration: const InputDecoration(labelText: 'Y', border: OutlineInputBorder()),
+                          decoration: const InputDecoration(labelText: 'Y (0.0 - 1.0)'),
                           keyboardType: TextInputType.numberWithOptions(decimal: true),
                         ),
                       ),
                     ],
                   ),
-                  const SizedBox(height: 8),
+                  const SizedBox(height: 12),
                   Row(
                     children: [
                       Expanded(
                         child: TextFormField(
                           controller: _mapWidthController,
-                          decoration: const InputDecoration(labelText: 'Ширина (0..1)', border: OutlineInputBorder()),
+                          decoration: const InputDecoration(labelText: 'Ширина на карте (0..1)'),
                           keyboardType: TextInputType.numberWithOptions(decimal: true),
                         ),
                       ),
@@ -418,7 +482,7 @@ class _StoreScreenState extends State<StoreScreen> {
                       Expanded(
                         child: TextFormField(
                           controller: _mapHeightController,
-                          decoration: const InputDecoration(labelText: 'Высота (0..1)', border: OutlineInputBorder()),
+                          decoration: const InputDecoration(labelText: 'Высота на карте (0..1)'),
                           keyboardType: TextInputType.numberWithOptions(decimal: true),
                         ),
                       ),
@@ -428,6 +492,7 @@ class _StoreScreenState extends State<StoreScreen> {
               ),
             ),
           ),
+
           // Кнопка сохранения
           Padding(
             padding: const EdgeInsets.symmetric(vertical: 16),
@@ -445,6 +510,7 @@ class _StoreScreenState extends State<StoreScreen> {
               ),
             ),
           ),
+
           // Приоритет
           Card(
             child: Padding(
@@ -477,7 +543,8 @@ class _StoreScreenState extends State<StoreScreen> {
               ),
             ),
           ),
-          // Ближайшая акция (календарь)
+
+          // Ближайшая акция
           Card(
             child: Padding(
               padding: const EdgeInsets.all(16),
@@ -507,6 +574,7 @@ class _StoreScreenState extends State<StoreScreen> {
               ),
             ),
           ),
+
           // Статистика
           Card(
             child: Padding(
@@ -542,6 +610,7 @@ class _StoreScreenState extends State<StoreScreen> {
               ),
             ),
           ),
+
           // Последнее уведомление
           Card(
             child: Padding(
@@ -574,6 +643,7 @@ class _StoreScreenState extends State<StoreScreen> {
               ),
             ),
           ),
+
           // Как это работает
           Card(
             child: Padding(
@@ -598,4 +668,318 @@ class _StoreScreenState extends State<StoreScreen> {
       ),
     );
   }
+}
+
+// ======================================================================
+// ВСПОМОГАТЕЛЬНЫЕ КЛАССЫ ДЛЯ РЕДАКТОРА
+// ======================================================================
+
+// Диалог редактора
+class _ImageEditorDialog extends StatefulWidget {
+  final String title;
+  final String imageUrl;
+  final double iconWidth;
+  final double iconHeight;
+
+  const _ImageEditorDialog({
+    required this.title,
+    required this.imageUrl,
+    required this.iconWidth,
+    required this.iconHeight,
+  });
+
+  @override
+  State<_ImageEditorDialog> createState() => _ImageEditorDialogState();
+}
+
+class _ImageEditorDialogState extends State<_ImageEditorDialog> {
+  Size? _imageSize;
+  Offset _offset = Offset.zero;
+  double _scale = 1.0;
+  late double _frameAspect = widget.iconWidth / widget.iconHeight;
+  Size _frameScreenSize = Size.zero; // инициализировано нулевым размером
+
+  Offset _lastFocal = Offset.zero;
+  double _lastScale = 1.0;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadImageSize();
+  }
+
+  void _loadImageSize() {
+    final image = Image.network(widget.imageUrl);
+    image.image.resolve(const ImageConfiguration()).addListener(
+      ImageStreamListener((info, _) {
+        if (mounted) {
+          setState(() {
+            _imageSize = Size(info.image.width.toDouble(), info.image.height.toDouble());
+          });
+        }
+      }),
+    );
+  }
+
+  Rect _cropRectInImage() {
+    final cropW = _frameSizeInImage().width;
+    final cropH = _frameSizeInImage().height;
+    return Rect.fromLTWH(_offset.dx, _offset.dy, cropW, cropH);
+  }
+
+  Size _frameSizeInImage() {
+    if (_frameScreenSize == Size.zero) return Size.zero;
+    return Size(_frameScreenSize.width / _scale, _frameScreenSize.height / _scale);
+  }
+
+  void _clampOffset() {
+    if (_imageSize == null) return;
+    final frameInImg = _frameSizeInImage();
+    final maxX = _imageSize!.width - frameInImg.width;
+    final maxY = _imageSize!.height - frameInImg.height;
+    _offset = Offset(
+      _offset.dx.clamp(0.0, maxX < 0 ? 0.0 : maxX),
+      _offset.dy.clamp(0.0, maxY < 0 ? 0.0 : maxY),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final screenSize = MediaQuery.of(context).size;
+    final editorWidth = screenSize.width * 0.6;
+    final editorHeight = screenSize.height * 0.6;
+
+    return AlertDialog(
+      title: Text(widget.title),
+      content: SizedBox(
+        width: editorWidth,
+        height: editorHeight,
+        child: _imageSize == null
+            ? const Center(child: CircularProgressIndicator())
+            : Row(
+                children: [
+                  Expanded(
+                    child: LayoutBuilder(
+                      builder: (context, constraints) => _buildEditor(constraints),
+                    ),
+                  ),
+                  const SizedBox(width: 24),
+                  _buildPreviewPanel(),
+                ],
+              ),
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context), child: const Text('Отмена')),
+        ElevatedButton(
+          onPressed: () => Navigator.pop(context, _cropRectInImage()),
+          child: const Text('Сохранить'),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildEditor(BoxConstraints constraints) {
+    final viewW = constraints.maxWidth;
+    final viewH = constraints.maxHeight;
+
+    double frameW, frameH;
+    final base = math.min(viewW, viewH) * 0.5;
+    if (_frameAspect >= 1) {
+      frameW = base;
+      frameH = base / _frameAspect;
+    } else {
+      frameH = base;
+      frameW = base * _frameAspect;
+    }
+    _frameScreenSize = Size(frameW, frameH);
+
+    final frameLeft = (viewW - frameW) / 2;
+    final frameTop = (viewH - frameH) / 2;
+
+    final imgLeft = frameLeft - _offset.dx * _scale;
+    final imgTop = frameTop - _offset.dy * _scale;
+    final imgW = _imageSize!.width * _scale;
+    final imgH = _imageSize!.height * _scale;
+
+    return GestureDetector(
+      onScaleStart: (details) {
+        _lastFocal = details.localFocalPoint;
+        _lastScale = _scale;
+      },
+      onScaleUpdate: (details) {
+        setState(() {
+          final newScale = (_lastScale * details.scale).clamp(0.05, 10.0);
+          final delta = details.localFocalPoint - _lastFocal;
+          _lastFocal = details.localFocalPoint;
+
+          _offset = Offset(
+            _offset.dx - delta.dx / _scale,
+            _offset.dy - delta.dy / _scale,
+          );
+          _scale = newScale;
+          _clampOffset();
+        });
+      },
+      child: ClipRect(
+        child: Container(
+          width: viewW,
+          height: viewH,
+          color: Colors.grey[300],
+          child: Stack(
+            children: [
+              Positioned(
+                left: imgLeft,
+                top: imgTop,
+                width: imgW,
+                height: imgH,
+                child: Image.network(widget.imageUrl, fit: BoxFit.fill),
+              ),
+              Positioned.fill(
+                child: CustomPaint(
+                  painter: _OverlayPainter(frameRect: Rect.fromLTWH(frameLeft, frameTop, frameW, frameH)),
+                ),
+              ),
+              Positioned(
+                left: frameLeft,
+                top: frameTop,
+                width: frameW,
+                height: frameH,
+                child: CustomPaint(painter: _DashedBorderPainter()),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPreviewPanel() {
+    const double previewSize = 130;
+    double pw, ph;
+    if (_frameAspect >= 1) {
+      pw = previewSize;
+      ph = previewSize / _frameAspect;
+    } else {
+      ph = previewSize;
+      pw = previewSize * _frameAspect;
+    }
+
+    return Column(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        const Text('Предпросмотр', style: TextStyle(fontSize: 12)),
+        const SizedBox(height: 8),
+        Container(
+          decoration: BoxDecoration(
+            border: Border.all(color: Colors.grey),
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(12),
+            child: SizedBox(width: pw, height: ph, child: _buildCropPreview(pw, ph)),
+          ),
+        ),
+        const SizedBox(height: 8),
+        Text('${widget.iconWidth.toInt()}x${widget.iconHeight.toInt()}',
+            style: const TextStyle(fontSize: 11, color: Colors.grey)),
+        const SizedBox(height: 16),
+        OutlinedButton.icon(
+          onPressed: _autoFit,
+          icon: const Icon(Icons.fit_screen, size: 16),
+          label: const Text('Авто'),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildCropPreview(double pw, double ph) {
+    final crop = _cropRectInImage();
+    if (crop.isEmpty) return const SizedBox();
+    final previewScale = pw / crop.width;
+    return ClipRect(
+      child: OverflowBox(
+        alignment: Alignment.topLeft,
+        minWidth: 0,
+        minHeight: 0,
+        maxWidth: double.infinity,
+        maxHeight: double.infinity,
+        child: Transform.translate(
+          offset: Offset(-crop.left * previewScale, -crop.top * previewScale),
+          child: SizedBox(
+            width: _imageSize!.width * previewScale,
+            height: _imageSize!.height * previewScale,
+            child: Image.network(widget.imageUrl, fit: BoxFit.fill),
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _autoFit() {
+    setState(() {
+      if (_imageSize == null) return;
+      final imgAspect = _imageSize!.width / _imageSize!.height;
+      Size cropInImg;
+      if (imgAspect > _frameAspect) {
+        final h = _imageSize!.height;
+        final w = h * _frameAspect;
+        cropInImg = Size(w, h);
+      } else {
+        final w = _imageSize!.width;
+        final h = w / _frameAspect;
+        cropInImg = Size(w, h);
+      }
+      _scale = _frameScreenSize.width / cropInImg.width;
+      _offset = Offset(
+        (_imageSize!.width - cropInImg.width) / 2,
+        (_imageSize!.height - cropInImg.height) / 2,
+      );
+      _clampOffset();
+    });
+  }
+}
+
+// Рисовальщик пунктирной рамки
+class _DashedBorderPainter extends CustomPainter {
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = Colors.white
+      ..strokeWidth = 2
+      ..style = PaintingStyle.stroke;
+
+    const dashWidth = 6.0;
+    const dashSpace = 4.0;
+
+    for (double x = 0; x < size.width; x += dashWidth + dashSpace) {
+      canvas.drawLine(Offset(x, 0), Offset(x + dashWidth, 0), paint);
+      canvas.drawLine(Offset(x, size.height), Offset(x + dashWidth, size.height), paint);
+    }
+    for (double y = 0; y < size.height; y += dashWidth + dashSpace) {
+      canvas.drawLine(Offset(0, y), Offset(0, y + dashWidth), paint);
+      canvas.drawLine(Offset(size.width, y), Offset(size.width, y + dashWidth), paint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
+}
+
+// Затемнение вне рамки
+class _OverlayPainter extends CustomPainter {
+  final Rect frameRect;
+  _OverlayPainter({required this.frameRect});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()..color = Colors.black.withOpacity(0.5);
+    final path = Path()
+      ..addRect(Rect.fromLTWH(0, 0, size.width, size.height))
+      ..addRect(frameRect)
+      ..fillType = PathFillType.evenOdd;
+    canvas.drawPath(path, paint);
+  }
+
+  @override
+  bool shouldRepaint(covariant _OverlayPainter oldDelegate) => oldDelegate.frameRect != frameRect;
 }
