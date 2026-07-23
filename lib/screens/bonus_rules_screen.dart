@@ -117,54 +117,98 @@ class _BonusRulesScreenState extends State<BonusRulesScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('Бонусные правила')),
-      body: StreamBuilder<QuerySnapshot>(
-        stream: _firestore.collection('bonus_rules').snapshots(),
-        builder: (context, snapshot) {
-          if (snapshot.hasError) {
-            return Center(child: Text('Ошибка: ${snapshot.error}'));
-          }
-          if (snapshot.connectionState == ConnectionState.waiting) {
-            return const Center(child: CircularProgressIndicator());
-          }
-          final rules = snapshot.data!.docs;
-          if (rules.isEmpty) {
-            return const Center(child: Text('Нет бонусных правил'));
-          }
-          return ListView.builder(
-            itemCount: rules.length,
-            itemBuilder: (context, index) {
-              final doc = rules[index];
-              final data = doc.data() as Map<String, dynamic>;
-              return Card(
-                margin: const EdgeInsets.all(8),
-                child: ListTile(
-                  title: Text(data['bonusDescription'] ?? 'Без описания'),
-                  subtitle: Text('Шагов: ${data['requiredSteps']} | Спонсор: ${data['sponsorShopId']} → ${data['targetShopId']}'),
-                  trailing: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      IconButton(
-                        icon: const Icon(Icons.edit),
-                        onPressed: () => _editRule(doc.id, data),
-                      ),
-                      IconButton(
-                        icon: const Icon(Icons.delete, color: Colors.red),
-                        onPressed: () => _deleteRule(doc.id),
-                      ),
-                    ],
-                  ),
-                ),
-              );
-            },
-          );
-        },
+  if (targetShop == null) {
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 16),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(colors: [Color(banner.color), Color(banner.color).withOpacity(0.8)]),
+        borderRadius: BorderRadius.circular(24),
       ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _addRule,
-        child: const Icon(Icons.add),
+      child: const Center(child: CircularProgressIndicator()),
+    );
+  }
+
+  // Если есть imageUrl, показываем картинку с трансформацией
+  Widget background;
+  if (banner.imageUrl.isNotEmpty) {
+    final Matrix4 transform = banner.imageTransform != null
+        ? Matrix4.fromList(banner.imageTransform!)
+        : Matrix4.identity();
+    background = ClipRRect(
+      borderRadius: BorderRadius.circular(28),
+      child: Transform(
+        transform: transform,
+        child: Image.network(
+          banner.imageUrl,
+          width: double.infinity,
+          height: double.infinity,
+          fit: BoxFit.cover,
+          errorBuilder: (context, error, stackTrace) => Container(
+            decoration: BoxDecoration(
+              gradient: LinearGradient(colors: [Color(banner.color), Color(banner.color).withOpacity(0.8)]),
+            ),
+          ),
+        ),
+      ),
+    );
+  } else {
+    background = Container(
+      decoration: BoxDecoration(
+        gradient: LinearGradient(colors: [Color(banner.color), Color(banner.color).withOpacity(0.8)]),
       ),
     );
   }
+
+  return MouseRegion(
+    cursor: SystemMouseCursors.click,
+    child: GestureDetector(
+      onTap: () => _showDialog(context, targetShop!),
+      child: Container(
+        margin: const EdgeInsets.symmetric(horizontal: 16),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(28),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.2),
+              blurRadius: 12,
+              offset: const Offset(0, 4),
+            ),
+          ],
+        ),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(28),
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              background,
+              // Затемняющая подложка для читаемости текста
+              Container(color: Colors.black.withOpacity(0.3)),
+              Padding(
+                padding: const EdgeInsets.all(20),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      banner.title,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 22,
+                        fontWeight: FontWeight.bold,
+                        shadows: [Shadow(offset: Offset(0, 1), blurRadius: 4, color: Colors.black26)],
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      banner.description,
+                      style: const TextStyle(color: Colors.white70, fontSize: 14),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    ),
+  );
 }

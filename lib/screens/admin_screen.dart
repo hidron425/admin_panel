@@ -3,7 +3,8 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'store_screen.dart';
 import 'stats_screen.dart';
 import 'promotions_screen.dart';
-import 'collabs_screen.dart';   // экран для коллабораций
+import 'collabs_screen.dart';
+import 'banners_screen.dart';   // 🆕 импорт экрана баннеров
 
 class AdminScreen extends StatefulWidget {
   final User user;
@@ -25,6 +26,7 @@ class _AdminScreenState extends State<AdminScreen> {
       const StatsScreen(),
       const PromotionsScreen(),
       const CollabsScreen(),
+      const BannersScreen(),   // 🆕 новый экран
     ];
   }
 
@@ -79,6 +81,12 @@ class _AdminScreenState extends State<AdminScreen> {
               title: const Text('Коллаборации'),
               selected: _selectedIndex == 3,
               onTap: () => setPage(3),
+            ),
+            ListTile(
+              leading: const Icon(Icons.campaign),          // 🆕 иконка рупора
+              title: const Text('Баннеры'),
+              selected: _selectedIndex == 4,               // 🆕 новый индекс
+              onTap: () => setPage(4),
             ),
           ],
         ),

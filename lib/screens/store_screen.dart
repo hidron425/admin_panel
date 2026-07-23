@@ -52,10 +52,14 @@ class _StoreScreenState extends State<StoreScreen> {
   void initState() {
     super.initState();
     _getStoreId();
+    _imageUrlController.addListener(_onImageUrlChanged);
+    _infoImageUrlController.addListener(_onInfoImageUrlChanged);
   }
 
   @override
   void dispose() {
+    _imageUrlController.removeListener(_onImageUrlChanged);
+    _infoImageUrlController.removeListener(_onInfoImageUrlChanged);
     _nameController.dispose();
     _imageUrlController.dispose();
     _descriptionController.dispose();
@@ -69,6 +73,16 @@ class _StoreScreenState extends State<StoreScreen> {
     _logoTransformController.dispose();
     _infoImageTransformController.dispose();
     super.dispose();
+  }
+
+  void _onImageUrlChanged() {
+    _logoTransformController.value = Matrix4.identity();
+    if (mounted) setState(() {});
+  }
+
+  void _onInfoImageUrlChanged() {
+    _infoImageTransformController.value = Matrix4.identity();
+    if (mounted) setState(() {});
   }
 
   Future<void> _getStoreId() async {
@@ -202,7 +216,9 @@ class _StoreScreenState extends State<StoreScreen> {
     };
 
     await _firestore.collection('shops').doc(_storeId).update(updatedData);
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Все изменения сохранены')));
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Все изменения сохранены')));
+    }
     _shopData.addAll(updatedData);
     setState(() {});
   }
@@ -226,13 +242,14 @@ class _StoreScreenState extends State<StoreScreen> {
     if (cropRect != null && mounted) {
       final scaleX = 130.0 / cropRect.width;
       final scaleY = 100.0 / cropRect.height;
-      final scale = scaleX < scaleY ? scaleX : scaleY;
+      final scale = math.min(scaleX, scaleY);
       final tx = -cropRect.left * scale;
       final ty = -cropRect.top * scale;
       final matrix = Matrix4.identity()
         ..scale(scale)
         ..translate(tx / scale, ty / scale);
       controller.value = matrix;
+      setState(() {}); // <-- обязательно для мгновенного обновления превью
     }
   }
 
@@ -311,7 +328,11 @@ class _StoreScreenState extends State<StoreScreen> {
                   const SizedBox(height: 8),
                   TextFormField(
                     controller: _imageUrlController,
-                    decoration: const InputDecoration(border: OutlineInputBorder(), hintText: 'https://...'),
+                    decoration: InputDecoration(
+                      border: const OutlineInputBorder(),
+                      hintText: 'https://...',
+                      hintStyle: TextStyle(color: Colors.grey[400], fontStyle: FontStyle.italic),
+                    ),
                   ),
                   const SizedBox(height: 12),
                   Row(
@@ -347,7 +368,7 @@ class _StoreScreenState extends State<StoreScreen> {
             ),
           ),
 
-          // Информация о магазине для пользователей
+          // Информация о магазине для пользователей (поля с бледными подсказками)
           Card(
             color: Colors.blue.shade50,
             child: Padding(
@@ -371,30 +392,46 @@ class _StoreScreenState extends State<StoreScreen> {
                   const SizedBox(height: 8),
                   TextFormField(
                     controller: _nameController,
-                    decoration: const InputDecoration(border: OutlineInputBorder(), hintText: 'Например: "Кофейня Арома"'),
+                    decoration: InputDecoration(
+                      border: const OutlineInputBorder(),
+                      hintText: 'Например: "Кофейня Арома"',
+                      hintStyle: TextStyle(color: Colors.grey[400], fontStyle: FontStyle.italic),
+                    ),
                   ),
                   const SizedBox(height: 16),
                   const Text('Описание магазина', style: TextStyle(fontWeight: FontWeight.w600)),
                   const SizedBox(height: 8),
                   TextFormField(
                     controller: _descriptionController,
-                    decoration: const InputDecoration(border: OutlineInputBorder(), hintText: 'Расскажите о вашем магазине, особенностях, атмосфере'),
                     maxLines: 3,
+                    decoration: InputDecoration(
+                      border: const OutlineInputBorder(),
+                      hintText: 'Расскажите о вашем магазине, особенностях, атмосфере',
+                      hintStyle: TextStyle(color: Colors.grey[400], fontStyle: FontStyle.italic),
+                    ),
                   ),
                   const SizedBox(height: 16),
                   const Text('Краткая скидка (на карточке)', style: TextStyle(fontWeight: FontWeight.w600)),
                   const SizedBox(height: 8),
                   TextFormField(
                     controller: _shortDiscountController,
-                    decoration: const InputDecoration(border: OutlineInputBorder(), hintText: '-30% на джинсы'),
+                    decoration: InputDecoration(
+                      border: const OutlineInputBorder(),
+                      hintText: '-30% на джинсы',
+                      hintStyle: TextStyle(color: Colors.grey[400], fontStyle: FontStyle.italic),
+                    ),
                   ),
                   const SizedBox(height: 16),
                   const Text('Подробное описание акции', style: TextStyle(fontWeight: FontWeight.w600)),
                   const SizedBox(height: 8),
                   TextFormField(
                     controller: _discountController,
-                    decoration: const InputDecoration(border: OutlineInputBorder(), hintText: 'Например: "Скидка 30% на джинсы из прошлой коллекции до 31 июля"'),
                     maxLines: 3,
+                    decoration: InputDecoration(
+                      border: const OutlineInputBorder(),
+                      hintText: 'Например: "Скидка 30% на джинсы из прошлой коллекции до 31 июля"',
+                      hintStyle: TextStyle(color: Colors.grey[400], fontStyle: FontStyle.italic),
+                    ),
                   ),
                   const SizedBox(height: 16),
                   const Text('🖼️ Фото для подробной информации', style: TextStyle(fontWeight: FontWeight.w600)),
@@ -404,7 +441,11 @@ class _StoreScreenState extends State<StoreScreen> {
                   const SizedBox(height: 8),
                   TextFormField(
                     controller: _infoImageUrlController,
-                    decoration: const InputDecoration(border: OutlineInputBorder(), hintText: 'https://...'),
+                    decoration: InputDecoration(
+                      border: const OutlineInputBorder(),
+                      hintText: 'https://... (ссылка на красивое фото магазина)',
+                      hintStyle: TextStyle(color: Colors.grey[400], fontStyle: FontStyle.italic),
+                    ),
                   ),
                   const SizedBox(height: 12),
                   Row(
@@ -454,7 +495,12 @@ class _StoreScreenState extends State<StoreScreen> {
                       Expanded(
                         child: TextFormField(
                           controller: _mapXController,
-                          decoration: const InputDecoration(labelText: 'X (0.0 - 1.0)'),
+                          decoration: InputDecoration(
+                            border: const OutlineInputBorder(),
+                            labelText: 'X (0.0 - 1.0)',
+                            hintText: '0.5',
+                            hintStyle: TextStyle(color: Colors.grey[400], fontStyle: FontStyle.italic),
+                          ),
                           keyboardType: TextInputType.numberWithOptions(decimal: true),
                         ),
                       ),
@@ -462,7 +508,12 @@ class _StoreScreenState extends State<StoreScreen> {
                       Expanded(
                         child: TextFormField(
                           controller: _mapYController,
-                          decoration: const InputDecoration(labelText: 'Y (0.0 - 1.0)'),
+                          decoration: InputDecoration(
+                            border: const OutlineInputBorder(),
+                            labelText: 'Y (0.0 - 1.0)',
+                            hintText: '0.5',
+                            hintStyle: TextStyle(color: Colors.grey[400], fontStyle: FontStyle.italic),
+                          ),
                           keyboardType: TextInputType.numberWithOptions(decimal: true),
                         ),
                       ),
@@ -474,7 +525,12 @@ class _StoreScreenState extends State<StoreScreen> {
                       Expanded(
                         child: TextFormField(
                           controller: _mapWidthController,
-                          decoration: const InputDecoration(labelText: 'Ширина на карте (0..1)'),
+                          decoration: InputDecoration(
+                            border: const OutlineInputBorder(),
+                            labelText: 'Ширина на карте (0..1)',
+                            hintText: '0.1',
+                            hintStyle: TextStyle(color: Colors.grey[400], fontStyle: FontStyle.italic),
+                          ),
                           keyboardType: TextInputType.numberWithOptions(decimal: true),
                         ),
                       ),
@@ -482,7 +538,12 @@ class _StoreScreenState extends State<StoreScreen> {
                       Expanded(
                         child: TextFormField(
                           controller: _mapHeightController,
-                          decoration: const InputDecoration(labelText: 'Высота на карте (0..1)'),
+                          decoration: InputDecoration(
+                            border: const OutlineInputBorder(),
+                            labelText: 'Высота на карте (0..1)',
+                            hintText: '0.1',
+                            hintStyle: TextStyle(color: Colors.grey[400], fontStyle: FontStyle.italic),
+                          ),
                           keyboardType: TextInputType.numberWithOptions(decimal: true),
                         ),
                       ),
@@ -511,7 +572,7 @@ class _StoreScreenState extends State<StoreScreen> {
             ),
           ),
 
-          // Приоритет
+          // Приоритет, ближайшая акция, статистика, уведомления, как это работает – без изменений
           Card(
             child: Padding(
               padding: const EdgeInsets.all(16),
@@ -544,7 +605,6 @@ class _StoreScreenState extends State<StoreScreen> {
             ),
           ),
 
-          // Ближайшая акция
           Card(
             child: Padding(
               padding: const EdgeInsets.all(16),
@@ -575,7 +635,6 @@ class _StoreScreenState extends State<StoreScreen> {
             ),
           ),
 
-          // Статистика
           Card(
             child: Padding(
               padding: const EdgeInsets.all(16),
@@ -611,7 +670,6 @@ class _StoreScreenState extends State<StoreScreen> {
             ),
           ),
 
-          // Последнее уведомление
           Card(
             child: Padding(
               padding: const EdgeInsets.all(16),
@@ -644,7 +702,6 @@ class _StoreScreenState extends State<StoreScreen> {
             ),
           ),
 
-          // Как это работает
           Card(
             child: Padding(
               padding: const EdgeInsets.all(16),
@@ -674,7 +731,6 @@ class _StoreScreenState extends State<StoreScreen> {
 // ВСПОМОГАТЕЛЬНЫЕ КЛАССЫ ДЛЯ РЕДАКТОРА
 // ======================================================================
 
-// Диалог редактора
 class _ImageEditorDialog extends StatefulWidget {
   final String title;
   final String imageUrl;
@@ -697,7 +753,7 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
   Offset _offset = Offset.zero;
   double _scale = 1.0;
   late double _frameAspect = widget.iconWidth / widget.iconHeight;
-  Size _frameScreenSize = Size.zero; // инициализировано нулевым размером
+  Size _frameScreenSize = Size.zero;
 
   Offset _lastFocal = Offset.zero;
   double _lastScale = 1.0;
@@ -722,6 +778,7 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
   }
 
   Rect _cropRectInImage() {
+    if (_imageSize == null || _frameScreenSize == Size.zero) return Rect.zero;
     final cropW = _frameSizeInImage().width;
     final cropH = _frameSizeInImage().height;
     return Rect.fromLTWH(_offset.dx, _offset.dy, cropW, cropH);
