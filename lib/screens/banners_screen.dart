@@ -971,13 +971,18 @@ class _BannerEditorScreenState extends State<BannerEditorScreen> {
 // ----------------------------------------------------------------------
 class _BannerItemPreview extends StatelessWidget {
   final BannerAd banner;
-  const _BannerItemPreview({required this.banner});
+
+  const _BannerItemPreview({
+    Key? key,
+    required this.banner,
+  }) : super(key: key);
 
   @override
   Widget build(BuildContext context) {
     return Stack(
       fit: StackFit.expand,
       children: [
+        // Фон: картинка с cropRect или градиент
         if (banner.imageUrl.isNotEmpty)
           Positioned.fill(
             child: banner.cropRectData != null && banner.cropRectData!.length == 4
@@ -992,20 +997,29 @@ class _BannerItemPreview extends StatelessWidget {
                     width: double.infinity,
                     height: double.infinity,
                   )
-                : Image.network(banner.imageUrl, fit: BoxFit.cover, errorBuilder: (_, __, ___) => Container(color: Color(banner.color))),
+                : Image.network(
+                    banner.imageUrl,
+                    fit: BoxFit.cover,
+                    errorBuilder: (_, __, ___) => Container(color: Color(banner.color)),
+                  ),
           )
         else
           Positioned.fill(
             child: Container(
               decoration: BoxDecoration(
                 gradient: LinearGradient(
-                  colors: [Color(banner.color), Color(banner.color).withOpacity(0.75)],
+                  colors: [
+                    Color(banner.color),
+                    Color(banner.color).withOpacity(0.75),
+                  ],
                   begin: Alignment.topLeft,
                   end: Alignment.bottomRight,
                 ),
               ),
             ),
           ),
+
+        // Затемнение для читаемости текста (только если есть картинка)
         if (banner.imageUrl.isNotEmpty)
           Positioned.fill(
             child: Container(
@@ -1013,11 +1027,16 @@ class _BannerItemPreview extends StatelessWidget {
                 gradient: LinearGradient(
                   begin: Alignment.centerLeft,
                   end: Alignment.centerRight,
-                  colors: [Colors.black.withOpacity(0.55), Colors.black.withOpacity(0.12)],
+                  colors: [
+                    Colors.black.withOpacity(0.55),
+                    Colors.black.withOpacity(0.12),
+                  ],
                 ),
               ),
             ),
           ),
+
+        // Контент: текст, скидка, стрелка
         Padding(
           padding: const EdgeInsets.all(20),
           child: Row(
@@ -1029,35 +1048,61 @@ class _BannerItemPreview extends StatelessWidget {
                   children: [
                     if (banner.discount.isNotEmpty)
                       Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                        decoration: BoxDecoration(color: Colors.white.withOpacity(0.22), borderRadius: BorderRadius.circular(20)),
-                        child: Text(banner.discount, style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w700)),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 4,
+                        ),
+                        decoration: BoxDecoration(
+                          color: Colors.white.withOpacity(0.22),
+                          borderRadius: BorderRadius.circular(20),
+                        ),
+                        child: Text(
+                          banner.discount,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 13,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
                       ),
                     if (banner.discount.isNotEmpty) const SizedBox(height: 8),
                     Text(
-                      banner.title.isNotEmpty ? banner.title : 'Баннер',
+                      banner.title.isNotEmpty ? banner.title : 'Название',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 20,
+                        fontWeight: FontWeight.w800,
+                      ),
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.w800, height: 1.15),
                     ),
                     if (banner.description.isNotEmpty) ...[
                       const SizedBox(height: 4),
                       Text(
                         banner.description,
+                        style: TextStyle(
+                          color: Colors.white.withOpacity(0.9),
+                          fontSize: 13,
+                        ),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: TextStyle(color: Colors.white.withOpacity(0.9), fontSize: 13),
                       ),
                     ],
                   ],
                 ),
               ),
-              const SizedBox(width: 12),
               Container(
                 width: 40,
                 height: 40,
-                decoration: BoxDecoration(color: Colors.white.withOpacity(0.2), shape: BoxShape.circle),
-                child: const Icon(Icons.arrow_forward_ios_rounded, color: Colors.white, size: 18),
+                decoration: BoxDecoration(
+                  color: Colors.white.withOpacity(0.2),
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(
+                  Icons.arrow_forward_ios_rounded,
+                  color: Colors.white,
+                  size: 18,
+                ),
               ),
             ],
           ),
@@ -1241,8 +1286,8 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
     final viewH = constraints.maxHeight;
 
     double frameW, frameH;
-    final maxFrameW = viewW * 0.9;
-    final maxFrameH = viewH * 0.9;
+    final maxFrameW = viewW * 0.4;
+    final maxFrameH = viewH * 0.4;
     if (maxFrameW / _frameAspect <= maxFrameH) {
       frameW = maxFrameW;
       frameH = frameW / _frameAspect;
@@ -1425,39 +1470,106 @@ Future<Color?> showColorPickerDialog(BuildContext context, Color current) {
 // ----------------------------------------------------------------------
 // BannerImagePreview – универсальный виджет для обрезки (используется и в админке, и в клиенте)
 // ----------------------------------------------------------------------
-class BannerImagePreview extends StatelessWidget {
+class BannerImagePreview extends StatefulWidget {
   final String imageUrl;
   final Rect? cropRect;
   final double width;
   final double height;
 
   const BannerImagePreview({
+    Key? key,
     required this.imageUrl,
     required this.cropRect,
     required this.width,
     required this.height,
-    super.key,
-  });
+  }) : super(key: key);
+
+  @override
+  State<BannerImagePreview> createState() => _BannerImagePreviewState();
+}
+
+class _BannerImagePreviewState extends State<BannerImagePreview> {
+  Size? _imageSize;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadSize();
+  }
+
+  @override
+  void didUpdateWidget(covariant BannerImagePreview oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.imageUrl != widget.imageUrl) {
+      _imageSize = null;
+      _loadSize();
+    }
+  }
+
+  void _loadSize() {
+    if (widget.imageUrl.isEmpty) return;
+    Image.network(widget.imageUrl)
+        .image
+        .resolve(const ImageConfiguration())
+        .addListener(ImageStreamListener((info, _) {
+      if (mounted) {
+        setState(() {
+          _imageSize = Size(
+            info.image.width.toDouble(),
+            info.image.height.toDouble(),
+          );
+        });
+      }
+    }));
+  }
+
+  Widget _buildWithSize(double maxW, double maxH) {
+    if (widget.cropRect == null ||
+        widget.cropRect!.isEmpty ||
+        widget.cropRect!.width == 0 ||
+        _imageSize == null) {
+      return Image.network(
+        widget.imageUrl,
+        fit: BoxFit.cover,
+        width: maxW,
+        height: maxH,
+        errorBuilder: (_, __, ___) => Container(color: Colors.grey[300]),
+      );
+    }
+
+    final crop = widget.cropRect!;
+    final previewScale = maxW / crop.width;
+
+    return ClipRect(
+      child: Stack(
+        children: [
+          Positioned(
+            left: -crop.left * previewScale,
+            top: -crop.top * previewScale,
+            width: _imageSize!.width * previewScale,
+            height: _imageSize!.height * previewScale,
+            child: Image.network(
+              widget.imageUrl,
+              fit: BoxFit.fill,
+              errorBuilder: (_, __, ___) => Container(color: Colors.grey[300]),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
-    if (cropRect == null || cropRect!.isEmpty || cropRect!.width == 0) {
-      return Image.network(imageUrl, fit: BoxFit.cover, width: width, height: height);
-    }
-    final crop = cropRect!;
-    final scaleX = width / crop.width;
-    final scaleY = height / crop.height;
-    final scale = math.min(scaleX, scaleY);
-    final offsetX = -crop.left * scale;
-    final offsetY = -crop.top * scale;
-    return ClipRect(
-      child: Transform.translate(
-        offset: Offset(offsetX, offsetY),
-        child: Transform.scale(
-          scale: scale,
-          child: Image.network(imageUrl, fit: BoxFit.cover, width: width, height: height),
+    if (widget.width.isInfinite || widget.height.isInfinite) {
+      return LayoutBuilder(
+        builder: (context, constraints) => _buildWithSize(
+          constraints.maxWidth.isFinite ? constraints.maxWidth : widget.width,
+          constraints.maxHeight.isFinite ? constraints.maxHeight : widget.height,
         ),
-      ),
-    );
+      );
+    } else {
+      return _buildWithSize(widget.width, widget.height);
+    }
   }
 }
