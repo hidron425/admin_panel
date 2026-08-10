@@ -5,6 +5,8 @@ import 'stats_screen.dart';
 import 'promotions_screen.dart';
 import 'collabs_screen.dart';
 import 'banners_screen.dart';   // 🆕 импорт экрана баннеров
+import 'analytics_screen.dart';
+import 'mall_map_editor_screen.dart';
 
 class AdminScreen extends StatefulWidget {
   final User user;
@@ -88,6 +90,25 @@ class _AdminScreenState extends State<AdminScreen> {
               selected: _selectedIndex == 4,               // 🆕 новый индекс
               onTap: () => setPage(4),
             ),
+          ListTile(
+  leading: const Icon(Icons.analytics_outlined),
+  title: const Text('Общая аналитика'),
+  onTap: () {
+    Navigator.pop(context);               // закрываем Drawer
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const AnalyticsScreen()),
+    );
+  },
+),
+ListTile(
+  leading: const Icon(Icons.map),
+  title: const Text('Управление картой'),
+  onTap: () {
+    Navigator.pop(context);
+    Navigator.push(context, MaterialPageRoute(builder: (_) => const MallMapEditorScreen()));
+  },
+),
           ],
         ),
       ),

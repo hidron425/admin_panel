@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:admin_panel/utils/audit.dart';   // 🆕 сервис аудита
 
 class BonusRulesScreen extends StatefulWidget {
   const BonusRulesScreen({Key? key}) : super(key: key);
@@ -11,6 +12,7 @@ class BonusRulesScreen extends StatefulWidget {
 class _BonusRulesScreenState extends State<BonusRulesScreen> {
   final _firestore = FirebaseFirestore.instance;
 
+  // ---------- Создание правила ----------
   Future<void> _addRule() async {
     final sponsorCtrl = TextEditingController();
     final targetCtrl = TextEditingController();
@@ -35,13 +37,21 @@ class _BonusRulesScreenState extends State<BonusRulesScreen> {
           TextButton(onPressed: () => Navigator.pop(context), child: const Text('Отмена')),
           ElevatedButton(
             onPressed: () async {
-              await _firestore.collection('bonus_rules').add({
+              final data = {
                 'sponsorShopId': sponsorCtrl.text.trim(),
                 'targetShopId': targetCtrl.text.trim(),
                 'requiredSteps': int.tryParse(stepsCtrl.text) ?? 5,
                 'bonusDescription': descCtrl.text.trim(),
                 'active': true,
-              });
+              };
+              final docRef = await _firestore.collection('bonus_rules').add(data);
+              // 🆕 Аудит создания
+              AuditLogger.log(
+                action: 'create',
+                collection: 'bonus_rules',
+                docId: docRef.id,
+                changes: data,
+              );
               Navigator.pop(context);
             },
             child: const Text('Добавить'),
@@ -51,6 +61,7 @@ class _BonusRulesScreenState extends State<BonusRulesScreen> {
     );
   }
 
+  // ---------- Редактирование правила ----------
   Future<void> _editRule(String id, Map<String, dynamic> data) async {
     final sponsorCtrl = TextEditingController(text: data['sponsorShopId']);
     final targetCtrl = TextEditingController(text: data['targetShopId']);
@@ -82,13 +93,21 @@ class _BonusRulesScreenState extends State<BonusRulesScreen> {
             TextButton(onPressed: () => Navigator.pop(context), child: const Text('Отмена')),
             ElevatedButton(
               onPressed: () async {
-                await _firestore.collection('bonus_rules').doc(id).update({
+                final updatedData = {
                   'sponsorShopId': sponsorCtrl.text.trim(),
                   'targetShopId': targetCtrl.text.trim(),
                   'requiredSteps': int.tryParse(stepsCtrl.text) ?? 5,
                   'bonusDescription': descCtrl.text.trim(),
                   'active': active,
-                });
+                };
+                await _firestore.collection('bonus_rules').doc(id).update(updatedData);
+                // 🆕 Аудит редактирования
+                AuditLogger.log(
+                  action: 'update',
+                  collection: 'bonus_rules',
+                  docId: id,
+                  changes: updatedData,
+                );
                 Navigator.pop(context);
               },
               child: const Text('Сохранить'),
@@ -99,6 +118,7 @@ class _BonusRulesScreenState extends State<BonusRulesScreen> {
     );
   }
 
+  // ---------- Удаление правила ----------
   Future<void> _deleteRule(String id) async {
     final confirm = await showDialog<bool>(
       context: context,
@@ -112,103 +132,67 @@ class _BonusRulesScreenState extends State<BonusRulesScreen> {
     );
     if (confirm == true) {
       await _firestore.collection('bonus_rules').doc(id).delete();
+      // 🆕 Аудит удаления
+      AuditLogger.log(
+        action: 'delete',
+        collection: 'bonus_rules',
+        docId: id,
+      );
     }
   }
 
+  // ---------- UI: список правил ----------
   @override
   Widget build(BuildContext context) {
-  if (targetShop == null) {
-    return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 16),
-      decoration: BoxDecoration(
-        gradient: LinearGradient(colors: [Color(banner.color), Color(banner.color).withOpacity(0.8)]),
-        borderRadius: BorderRadius.circular(24),
-      ),
-      child: const Center(child: CircularProgressIndicator()),
-    );
-  }
-
-  // Если есть imageUrl, показываем картинку с трансформацией
-  Widget background;
-  if (banner.imageUrl.isNotEmpty) {
-    final Matrix4 transform = banner.imageTransform != null
-        ? Matrix4.fromList(banner.imageTransform!)
-        : Matrix4.identity();
-    background = ClipRRect(
-      borderRadius: BorderRadius.circular(28),
-      child: Transform(
-        transform: transform,
-        child: Image.network(
-          banner.imageUrl,
-          width: double.infinity,
-          height: double.infinity,
-          fit: BoxFit.cover,
-          errorBuilder: (context, error, stackTrace) => Container(
-            decoration: BoxDecoration(
-              gradient: LinearGradient(colors: [Color(banner.color), Color(banner.color).withOpacity(0.8)]),
-            ),
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Бонусные правила'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.add),
+            onPressed: _addRule,
           ),
-        ),
+        ],
       ),
-    );
-  } else {
-    background = Container(
-      decoration: BoxDecoration(
-        gradient: LinearGradient(colors: [Color(banner.color), Color(banner.color).withOpacity(0.8)]),
-      ),
-    );
-  }
+      body: StreamBuilder<QuerySnapshot>(
+        stream: _firestore.collection('bonus_rules').snapshots(),
+        builder: (context, snapshot) {
+          if (snapshot.hasError) return Center(child: Text('Ошибка: ${snapshot.error}'));
+          if (snapshot.connectionState == ConnectionState.waiting) return const Center(child: CircularProgressIndicator());
+          final docs = snapshot.data!.docs;
+          if (docs.isEmpty) return const Center(child: Text('Нет правил'));
 
-  return MouseRegion(
-    cursor: SystemMouseCursors.click,
-    child: GestureDetector(
-      onTap: () => _showDialog(context, targetShop!),
-      child: Container(
-        margin: const EdgeInsets.symmetric(horizontal: 16),
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(28),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withOpacity(0.2),
-              blurRadius: 12,
-              offset: const Offset(0, 4),
-            ),
-          ],
-        ),
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(28),
-          child: Stack(
-            fit: StackFit.expand,
-            children: [
-              background,
-              // Затемняющая подложка для читаемости текста
-              Container(color: Colors.black.withOpacity(0.3)),
-              Padding(
-                padding: const EdgeInsets.all(20),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      banner.title,
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 22,
-                        fontWeight: FontWeight.bold,
-                        shadows: [Shadow(offset: Offset(0, 1), blurRadius: 4, color: Colors.black26)],
+          return ListView.builder(
+            itemCount: docs.length,
+            itemBuilder: (context, index) {
+              final doc = docs[index];
+              final data = doc.data() as Map<String, dynamic>;
+              return Card(
+                margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+                child: ListTile(
+                  title: Text(data['bonusDescription'] ?? ''),
+                  subtitle: Text(
+                    'Спонсор: ${data['sponsorShopId']} → Бонус: ${data['targetShopId']} | Шагов: ${data['requiredSteps']} | ${data['active'] == true ? "Активно" : "Неактивно"}',
+                  ),
+                  trailing: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      IconButton(
+                        icon: const Icon(Icons.edit),
+                        onPressed: () => _editRule(doc.id, data),
                       ),
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      banner.description,
-                      style: const TextStyle(color: Colors.white70, fontSize: 14),
-                    ),
-                  ],
+                      IconButton(
+                        icon: const Icon(Icons.delete, color: Colors.red),
+                        onPressed: () => _deleteRule(doc.id),
+                      ),
+                    ],
+                  ),
                 ),
-              ),
-            ],
-          ),
-        ),
+              );
+            },
+          );
+        },
       ),
-    ),
-  );
+    );
+  }
 }

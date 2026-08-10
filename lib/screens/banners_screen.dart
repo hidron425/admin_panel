@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'dart:math' as math;
 import 'dart:async';
+import 'package:admin_panel/utils/audit.dart';   // 🆕 сервис аудита
 
 // ----------------------------------------------------------------------
 // Модель BannerAd (локальная, чтобы не зависеть от других файлов)
@@ -190,6 +191,12 @@ class _BannersScreenState extends State<BannersScreen> {
     if (confirm != true) return;
     try {
       await _firestore.collection('banners').doc(id).delete();
+      // 🆕 Аудит удаления
+      AuditLogger.log(
+        action: 'delete',
+        collection: 'banners',
+        docId: id,
+      );
       setState(() {
         _banners.removeWhere((b) => b.id == id);
         _applyFilter();
@@ -203,6 +210,13 @@ class _BannersScreenState extends State<BannersScreen> {
   Future<void> _toggleActive(String id, bool current) async {
     try {
       await _firestore.collection('banners').doc(id).update({'isActive': !current});
+      // 🆕 Аудит изменения активности
+      AuditLogger.log(
+        action: 'update',
+        collection: 'banners',
+        docId: id,
+        changes: {'isActive': !current},
+      );
       setState(() {
         final idx = _banners.indexWhere((b) => b.id == id);
         if (idx != -1) {
@@ -373,7 +387,7 @@ class _BannersScreenState extends State<BannersScreen> {
 }
 
 // ----------------------------------------------------------------------
-// _BannerCard (использует BannerAd)
+// _BannerCard (без изменений)
 // ----------------------------------------------------------------------
 class _BannerCard extends StatelessWidget {
   final BannerAd banner;
@@ -550,7 +564,7 @@ class _BannerCard extends StatelessWidget {
 }
 
 // ----------------------------------------------------------------------
-// BannerEditorScreen – редактор баннера
+// BannerEditorScreen – редактор баннера (аудит в _saveBanner)
 // ----------------------------------------------------------------------
 class BannerEditorScreen extends StatefulWidget {
   final BannerAd? banner;
@@ -655,12 +669,25 @@ class _BannerEditorScreenState extends State<BannerEditorScreen> {
       data['targetShopId'] = widget.banner!.targetShopId;
     }
     try {
+      String action;
+      String docId;
       if (_isEditing) {
         await _firestore.collection('banners').doc(widget.banner!.id).update(data);
+        action = 'update';
+        docId = widget.banner!.id;
       } else {
         data['createdAt'] = FieldValue.serverTimestamp();
-        await _firestore.collection('banners').add(data);
+        final docRef = await _firestore.collection('banners').add(data);
+        action = 'create';
+        docId = docRef.id;
       }
+      // 🆕 Аудит создания/обновления
+      AuditLogger.log(
+        action: action,
+        collection: 'banners',
+        docId: docId,
+        changes: data,
+      );
       widget.onSaved?.call();
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(_isEditing ? 'Баннер обновлён' : 'Баннер создан')));
@@ -967,7 +994,7 @@ class _BannerEditorScreenState extends State<BannerEditorScreen> {
 }
 
 // ----------------------------------------------------------------------
-// _BannerItemPreview – заглушка для предпросмотра в редакторе
+// _BannerItemPreview – заглушка для предпросмотра в редакторе (без изменений)
 // ----------------------------------------------------------------------
 class _BannerItemPreview extends StatelessWidget {
   final BannerAd banner;
@@ -982,7 +1009,6 @@ class _BannerItemPreview extends StatelessWidget {
     return Stack(
       fit: StackFit.expand,
       children: [
-        // Фон: картинка с cropRect или градиент
         if (banner.imageUrl.isNotEmpty)
           Positioned.fill(
             child: banner.cropRectData != null && banner.cropRectData!.length == 4
@@ -1018,8 +1044,6 @@ class _BannerItemPreview extends StatelessWidget {
               ),
             ),
           ),
-
-        // Затемнение для читаемости текста (только если есть картинка)
         if (banner.imageUrl.isNotEmpty)
           Positioned.fill(
             child: Container(
@@ -1035,8 +1059,6 @@ class _BannerItemPreview extends StatelessWidget {
               ),
             ),
           ),
-
-        // Контент: текст, скидка, стрелка
         Padding(
           padding: const EdgeInsets.all(20),
           child: Row(
@@ -1048,31 +1070,14 @@ class _BannerItemPreview extends StatelessWidget {
                   children: [
                     if (banner.discount.isNotEmpty)
                       Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 10,
-                          vertical: 4,
-                        ),
-                        decoration: BoxDecoration(
-                          color: Colors.white.withOpacity(0.22),
-                          borderRadius: BorderRadius.circular(20),
-                        ),
-                        child: Text(
-                          banner.discount,
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 13,
-                            fontWeight: FontWeight.w700,
-                          ),
-                        ),
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                        decoration: BoxDecoration(color: Colors.white.withOpacity(0.22), borderRadius: BorderRadius.circular(20)),
+                        child: Text(banner.discount, style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w700)),
                       ),
                     if (banner.discount.isNotEmpty) const SizedBox(height: 8),
                     Text(
                       banner.title.isNotEmpty ? banner.title : 'Название',
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 20,
-                        fontWeight: FontWeight.w800,
-                      ),
+                      style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.w800),
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
                     ),
@@ -1080,10 +1085,7 @@ class _BannerItemPreview extends StatelessWidget {
                       const SizedBox(height: 4),
                       Text(
                         banner.description,
-                        style: TextStyle(
-                          color: Colors.white.withOpacity(0.9),
-                          fontSize: 13,
-                        ),
+                        style: TextStyle(color: Colors.white.withOpacity(0.9), fontSize: 13),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                       ),
@@ -1094,15 +1096,8 @@ class _BannerItemPreview extends StatelessWidget {
               Container(
                 width: 40,
                 height: 40,
-                decoration: BoxDecoration(
-                  color: Colors.white.withOpacity(0.2),
-                  shape: BoxShape.circle,
-                ),
-                child: const Icon(
-                  Icons.arrow_forward_ios_rounded,
-                  color: Colors.white,
-                  size: 18,
-                ),
+                decoration: BoxDecoration(color: Colors.white.withOpacity(0.2), shape: BoxShape.circle),
+                child: const Icon(Icons.arrow_forward_ios_rounded, color: Colors.white, size: 18),
               ),
             ],
           ),

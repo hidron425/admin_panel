@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:admin_panel/utils/audit.dart';   // 🆕 сервис аудита
 
 class CollabsScreen extends StatefulWidget {
   const CollabsScreen({Key? key}) : super(key: key);
@@ -126,6 +127,12 @@ class _CollabsScreenState extends State<CollabsScreen>
     );
     if (confirm == true) {
       await _firestore.collection('active_collabs').doc(docId).delete();
+      // 🆕 Аудит удаления коллаборации
+      AuditLogger.log(
+        action: 'delete',
+        collection: 'active_collabs',
+        docId: docId,
+      );
     }
   }
 
@@ -173,6 +180,13 @@ class _CollabsScreenState extends State<CollabsScreen>
         'fromShopId': fromShopId,
         'toShopId': toShopId,
       });
+      // 🆕 Аудит принятия предложения (Cloud Function меняет данные, но действие инициировано админом)
+      AuditLogger.log(
+        action: 'accept_suggestion',
+        collection: 'suggested_collabs',
+        docId: suggestionId,
+        changes: {'fromShopId': fromShopId, 'toShopId': toShopId},
+      );
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Коллаборация активирована')));
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Ошибка: $e')));
@@ -322,7 +336,7 @@ class _CollabsScreenState extends State<CollabsScreen>
                   ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Ставка и бюджет должны быть положительными числами')));
                   return;
                 }
-                await _firestore.collection('auction_offers').add({
+                final data = {
                   'shopId': _currentShopId,
                   'bid': bid,
                   'budget': budget,
@@ -331,7 +345,15 @@ class _CollabsScreenState extends State<CollabsScreen>
                   'status': 'active',
                   'expires': Timestamp.fromDate(expires),
                   'createdAt': FieldValue.serverTimestamp(),
-                });
+                };
+                final docRef = await _firestore.collection('auction_offers').add(data);
+                // 🆕 Аудит создания оферты
+                AuditLogger.log(
+                  action: 'create',
+                  collection: 'auction_offers',
+                  docId: docRef.id,
+                  changes: data,
+                );
                 Navigator.pop(context);
                 ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Оферта создана, теперь другие магазины могут откликнуться')));
               },
@@ -388,13 +410,21 @@ class _CollabsScreenState extends State<CollabsScreen>
                   ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Ставка и бюджет должны быть положительными числами')));
                   return;
                 }
-                await _firestore.collection('auction_offers').doc(offerId).update({
+                final data = {
                   'bid': bid,
                   'budget': budget,
                   'remainingBudget': budget,
                   'targetCategory': categoryCtrl.text.trim().isEmpty ? null : categoryCtrl.text.trim(),
                   'expires': Timestamp.fromDate(expires),
-                });
+                };
+                await _firestore.collection('auction_offers').doc(offerId).update(data);
+                // 🆕 Аудит редактирования оферты
+                AuditLogger.log(
+                  action: 'update',
+                  collection: 'auction_offers',
+                  docId: offerId,
+                  changes: data,
+                );
                 Navigator.pop(context);
                 ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Оферта обновлена')));
               },
@@ -421,6 +451,12 @@ class _CollabsScreenState extends State<CollabsScreen>
     );
     if (confirm == true) {
       await _firestore.collection('auction_offers').doc(offerId).delete();
+      // 🆕 Аудит удаления оферты
+      AuditLogger.log(
+        action: 'delete',
+        collection: 'auction_offers',
+        docId: offerId,
+      );
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Оферта удалена')));
     }
   }
@@ -475,7 +511,7 @@ class _CollabsScreenState extends State<CollabsScreen>
 
     try {
       // Создаём активную коллаборацию
-      await _firestore.collection('active_collabs').add({
+      final collabData = {
         'fromShopId': _currentShopId,
         'toShopId': targetShopId,
         'expires': Timestamp.fromDate(DateTime.now().add(const Duration(days: 90))),
@@ -484,14 +520,30 @@ class _CollabsScreenState extends State<CollabsScreen>
         'type': 'auction_response',
         'offerId': offerId,
         'createdAt': FieldValue.serverTimestamp(),
-      });
+      };
+      final collabDocRef = await _firestore.collection('active_collabs').add(collabData);
+      // 🆕 Аудит создания коллаборации
+      AuditLogger.log(
+        action: 'create',
+        collection: 'active_collabs',
+        docId: collabDocRef.id,
+        changes: collabData,
+      );
 
       // Деактивируем оферту, чтобы её больше никто не мог принять
-      await _firestore.collection('auction_offers').doc(offerId).update({
+      final offerUpdate = {
         'status': 'taken',
         'takenBy': _currentShopId,
         'takenAt': FieldValue.serverTimestamp(),
-      });
+      };
+      await _firestore.collection('auction_offers').doc(offerId).update(offerUpdate);
+      // 🆕 Аудит изменения статуса оферты
+      AuditLogger.log(
+        action: 'update',
+        collection: 'auction_offers',
+        docId: offerId,
+        changes: offerUpdate,
+      );
 
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Коллаборация создана! Оферта больше не доступна для других магазинов.')));
     } catch (e) {

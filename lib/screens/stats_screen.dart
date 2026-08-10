@@ -7,6 +7,7 @@ import 'package:fl_chart/fl_chart.dart';
 import 'dart:html' as html;
 import 'dart:typed_data';
 import 'package:cloud_functions/cloud_functions.dart';
+import 'package:admin_panel/utils/audit.dart';   // 🆕 сервис аудита
 
 class StatsScreen extends StatefulWidget {
   final int initialTabIndex;
@@ -463,6 +464,17 @@ class _NotificationsFormState extends State<NotificationsForm> {
       });
 
       if (result.data['success'] == true) {
+        // 🆕 Аудит отправки push-уведомления
+        AuditLogger.log(
+          action: 'send_push',
+          collection: 'user_progress',
+          docId: _shopId!,  // идентификатор магазина
+          changes: {
+            'title': _titleController.text.trim(),
+            'body': _bodyController.text.trim(),
+            'subscribersCount': userIds.length,
+          },
+        );
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
           content: Text('Уведомление поставлено в очередь для ${result.data['count']} подписчиков'),
         ));

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:admin_panel/utils/audit.dart';   // 🆕 импорт сервиса аудита
 
 class AllStoresScreen extends StatefulWidget {
   const AllStoresScreen({Key? key}) : super(key: key);
@@ -13,7 +14,16 @@ class _AllStoresScreenState extends State<AllStoresScreen> {
 
   Future<void> _updateStore(String docId, Map<String, dynamic> data) async {
     await _firestore.collection('shops').doc(docId).update(data);
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Сохранено')));
+    // 🆕 Логируем изменение магазина
+    AuditLogger.log(
+      action: 'update',
+      collection: 'shops',
+      docId: docId,
+      changes: data,
+    );
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Сохранено')));
+    }
   }
 
   @override

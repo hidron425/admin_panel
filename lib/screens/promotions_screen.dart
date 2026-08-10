@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:admin_panel/utils/audit.dart';   // 🆕 сервис аудита
 
 class PromotionsScreen extends StatefulWidget {
   const PromotionsScreen({Key? key}) : super(key: key);
@@ -168,11 +169,24 @@ class _PromotionsScreenState extends State<PromotionsScreen> {
                     'endDate': Timestamp.fromDate(endDate),
                     'isActive': isActive,
                   };
+                  String action;
+                  String docId;
                   if (isEdit) {
                     await _firestore.collection('store_promotions').doc(existing['id']).update(data);
+                    action = 'update';
+                    docId = existing['id'];
                   } else {
-                    await _firestore.collection('store_promotions').add(data);
+                    final docRef = await _firestore.collection('store_promotions').add(data);
+                    action = 'create';
+                    docId = docRef.id;
                   }
+                  // 🆕 Аудит создания/обновления акции
+                  AuditLogger.log(
+                    action: action,
+                    collection: 'store_promotions',
+                    docId: docId,
+                    changes: data,
+                  );
                   if (mounted) Navigator.pop(context);
                   await _loadPromotions();
                 },
@@ -198,6 +212,12 @@ class _PromotionsScreenState extends State<PromotionsScreen> {
     );
     if (confirm == true) {
       await _firestore.collection('store_promotions').doc(id).delete();
+      // 🆕 Аудит удаления
+      AuditLogger.log(
+        action: 'delete',
+        collection: 'store_promotions',
+        docId: id,
+      );
       await _loadPromotions();
     }
   }

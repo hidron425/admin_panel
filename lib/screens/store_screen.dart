@@ -5,6 +5,7 @@ import 'package:intl/intl.dart';
 import 'dart:math' as math;
 import 'promotions_screen.dart';
 import 'stats_screen.dart';
+import 'package:admin_panel/utils/audit.dart';   // 🆕 сервис аудита
 
 // ----------------------------------------------------------------------
 // ОСНОВНОЙ ЭКРАН МАГАЗИНА (StoreScreen)
@@ -216,6 +217,15 @@ class _StoreScreenState extends State<StoreScreen> {
     };
 
     await _firestore.collection('shops').doc(_storeId).update(updatedData);
+
+    // 🆕 Аудит изменения магазина
+    AuditLogger.log(
+      action: 'update',
+      collection: 'shops',
+      docId: _storeId!,
+      changes: updatedData,
+    );
+
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Все изменения сохранены')));
     }
@@ -249,7 +259,7 @@ class _StoreScreenState extends State<StoreScreen> {
         ..scale(scale)
         ..translate(tx / scale, ty / scale);
       controller.value = matrix;
-      setState(() {}); // <-- обязательно для мгновенного обновления превью
+      setState(() {});
     }
   }
 
@@ -284,6 +294,15 @@ class _StoreScreenState extends State<StoreScreen> {
     );
     if (confirm == true) {
       await _firestore.collection('shops').doc(_storeId).update({'priority': currentPriority + 1});
+
+      // 🆕 Аудит повышения приоритета
+      AuditLogger.log(
+        action: 'update',
+        collection: 'shops',
+        docId: _storeId!,
+        changes: {'priority': currentPriority + 1},
+      );
+
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Приоритет повышен!')));
         setState(() => _shopData['priority'] = currentPriority + 1);
