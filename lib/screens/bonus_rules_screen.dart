@@ -1,6 +1,21 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:admin_panel/utils/audit.dart';   // 🆕 сервис аудита
+import 'package:admin_panel/utils/audit.dart';
+
+// Типы условий и триггеров
+const List<String> triggerOptions = [
+  'step_completed',
+  'cycle_completed',
+  'collab_activated',
+];
+
+const Map<String, String> conditionTypes = {
+  'stepCount': 'Конкретный шаг (1-5)',
+  'cycleCount': 'Номер цикла',
+  'minStepsCompleted': 'Минимальное число шагов',
+  'shopId': 'ID магазина',
+  'category': 'Категория магазина',
+};
 
 class BonusRulesScreen extends StatefulWidget {
   const BonusRulesScreen({Key? key}) : super(key: key);
@@ -12,147 +27,208 @@ class BonusRulesScreen extends StatefulWidget {
 class _BonusRulesScreenState extends State<BonusRulesScreen> {
   final _firestore = FirebaseFirestore.instance;
 
-  // ---------- Создание правила ----------
-  Future<void> _addRule() async {
-    final sponsorCtrl = TextEditingController();
-    final targetCtrl = TextEditingController();
-    final stepsCtrl = TextEditingController();
-    final descCtrl = TextEditingController();
+  // ---------- Открыть диалог добавления / редактирования ----------
+  Future<void> _showRuleDialog({String? ruleId, Map<String, dynamic>? existing}) async {
+    final isEdit = ruleId != null;
+    final formKey = GlobalKey<FormState>();
+
+    // Контроллеры для reward
+    final rewardTitleCtrl = TextEditingController(text: existing?['reward']?['title'] ?? '');
+    final rewardMsgCtrl = TextEditingController(text: existing?['reward']?['message'] ?? '');
+    final rewardIconCtrl = TextEditingController(text: existing?['reward']?['icon'] ?? '🎁');
+    final rewardShopCtrl = TextEditingController(text: existing?['reward']?['targetShopId'] ?? '');
+
+    // Выбранный триггер
+    String selectedTrigger = existing?['trigger'] ?? 'step_completed';
+    bool oncePerUser = existing?['oncePerUser'] ?? true;
+    bool active = existing?['active'] ?? true;
+
+    // Список условий (редактируемый)
+    List<MapEntry<String, String>> conditions = [];
+    final existingCond = existing?['conditions'] as Map<String, dynamic>?;
+    if (existingCond != null) {
+      existingCond.forEach((key, value) {
+        conditions.add(MapEntry(key, value.toString()));
+      });
+    }
 
     await showDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Добавить бонусное правило'),
-        content: SingleChildScrollView(
-          child: Column(
-            children: [
-              TextField(controller: sponsorCtrl, decoration: const InputDecoration(labelText: 'ID магазина-спонсора')),
-              TextField(controller: targetCtrl, decoration: const InputDecoration(labelText: 'ID магазина-бонуса')),
-              TextField(controller: stepsCtrl, decoration: const InputDecoration(labelText: 'Шагов (например 5)'), keyboardType: TextInputType.number),
-              TextField(controller: descCtrl, decoration: const InputDecoration(labelText: 'Описание бонуса')),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Отмена')),
-          ElevatedButton(
-            onPressed: () async {
-              final data = {
-                'sponsorShopId': sponsorCtrl.text.trim(),
-                'targetShopId': targetCtrl.text.trim(),
-                'requiredSteps': int.tryParse(stepsCtrl.text) ?? 5,
-                'bonusDescription': descCtrl.text.trim(),
-                'active': true,
-              };
-              final docRef = await _firestore.collection('bonus_rules').add(data);
-              // 🆕 Аудит создания
-              AuditLogger.log(
-                action: 'create',
-                collection: 'bonus_rules',
-                docId: docRef.id,
-                changes: data,
-              );
-              Navigator.pop(context);
-            },
-            child: const Text('Добавить'),
-          ),
-        ],
-      ),
-    );
-  }
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) {
+          return AlertDialog(
+            title: Text(isEdit ? 'Редактировать правило' : 'Новое правило'),
+            content: SingleChildScrollView(
+              child: Form(
+                key: formKey,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // ----- ТРИГГЕР -----
+                    DropdownButtonFormField<String>(
+                      value: selectedTrigger,
+                      decoration: const InputDecoration(labelText: 'Триггер'),
+                      items: triggerOptions.map((t) => DropdownMenuItem(value: t, child: Text(t))).toList(),
+                      onChanged: (v) => setDialogState(() => selectedTrigger = v!),
+                    ),
+                    const SizedBox(height: 16),
 
-  // ---------- Редактирование правила ----------
-  Future<void> _editRule(String id, Map<String, dynamic> data) async {
-    final sponsorCtrl = TextEditingController(text: data['sponsorShopId']);
-    final targetCtrl = TextEditingController(text: data['targetShopId']);
-    final stepsCtrl = TextEditingController(text: data['requiredSteps'].toString());
-    final descCtrl = TextEditingController(text: data['bonusDescription']);
-    bool active = data['active'] ?? true;
+                    // ----- УСЛОВИЯ -----
+                    const Text('Условия срабатывания', style: TextStyle(fontWeight: FontWeight.bold)),
+                    const SizedBox(height: 8),
+                    ...List.generate(conditions.length, (i) {
+                      return Row(
+                        children: [
+                          Expanded(
+                            flex: 2,
+                            child: DropdownButtonFormField<String>(
+                              value: conditions[i].key,
+                              decoration: const InputDecoration(labelText: 'Тип'),
+                              items: conditionTypes.entries
+                                  .map((e) => DropdownMenuItem(value: e.key, child: Text(e.value)))
+                                  .toList(),
+                              onChanged: (v) => setDialogState(() => conditions[i] = MapEntry(v!, conditions[i].value)),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            flex: 3,
+                            child: TextFormField(
+                              initialValue: conditions[i].value,
+                              decoration: const InputDecoration(labelText: 'Значение'),
+                              onChanged: (v) => setDialogState(() => conditions[i] = MapEntry(conditions[i].key, v)),
+                            ),
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.remove_circle, color: Colors.red),
+                            onPressed: () => setDialogState(() => conditions.removeAt(i)),
+                          ),
+                        ],
+                      );
+                    }),
+                    const SizedBox(height: 8),
+                    OutlinedButton.icon(
+                      icon: const Icon(Icons.add),
+                      label: const Text('Добавить условие'),
+                      onPressed: () => setDialogState(() => conditions.add(const MapEntry('stepCount', '1'))),
+                    ),
 
-    await showDialog(
-      context: context,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setStateDialog) => AlertDialog(
-          title: const Text('Редактировать правило'),
-          content: SingleChildScrollView(
-            child: Column(
-              children: [
-                TextField(controller: sponsorCtrl, decoration: const InputDecoration(labelText: 'ID спонсора')),
-                TextField(controller: targetCtrl, decoration: const InputDecoration(labelText: 'ID бонусного магазина')),
-                TextField(controller: stepsCtrl, decoration: const InputDecoration(labelText: 'Шагов'), keyboardType: TextInputType.number),
-                TextField(controller: descCtrl, decoration: const InputDecoration(labelText: 'Описание')),
-                SwitchListTile(
-                  title: const Text('Активно'),
-                  value: active,
-                  onChanged: (val) => setStateDialog(() => active = val),
+                    const SizedBox(height: 16),
+                    const Divider(),
+                    // ----- НАГРАДА -----
+                    const Text('Награда', style: TextStyle(fontWeight: FontWeight.bold)),
+                    const SizedBox(height: 8),
+                    TextFormField(
+                      controller: rewardTitleCtrl,
+                      decoration: const InputDecoration(labelText: 'Название'),
+                    ),
+                    TextFormField(
+                      controller: rewardMsgCtrl,
+                      decoration: const InputDecoration(labelText: 'Описание'),
+                      maxLines: 2,
+                    ),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: TextFormField(
+                            controller: rewardIconCtrl,
+                            decoration: const InputDecoration(labelText: 'Иконка'),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: TextFormField(
+                            controller: rewardShopCtrl,
+                            decoration: const InputDecoration(labelText: 'ID бонусного магазина'),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+                    Row(
+                      children: [
+                        const Text('Однократно'),
+                        Switch(
+                          value: oncePerUser,
+                          onChanged: (v) => setDialogState(() => oncePerUser = v),
+                        ),
+                        const Spacer(),
+                        const Text('Активно'),
+                        Switch(
+                          value: active,
+                          onChanged: (v) => setDialogState(() => active = v),
+                        ),
+                      ],
+                    ),
+                  ],
                 ),
-              ],
+              ),
             ),
-          ),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(context), child: const Text('Отмена')),
-            ElevatedButton(
-              onPressed: () async {
-                final updatedData = {
-                  'sponsorShopId': sponsorCtrl.text.trim(),
-                  'targetShopId': targetCtrl.text.trim(),
-                  'requiredSteps': int.tryParse(stepsCtrl.text) ?? 5,
-                  'bonusDescription': descCtrl.text.trim(),
-                  'active': active,
-                };
-                await _firestore.collection('bonus_rules').doc(id).update(updatedData);
-                // 🆕 Аудит редактирования
-                AuditLogger.log(
-                  action: 'update',
-                  collection: 'bonus_rules',
-                  docId: id,
-                  changes: updatedData,
-                );
-                Navigator.pop(context);
-              },
-              child: const Text('Сохранить'),
-            ),
-          ],
-        ),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Отмена')),
+              ElevatedButton(
+                onPressed: () async {
+                  final data = {
+                    'trigger': selectedTrigger,
+                    'conditions': Map.fromEntries(conditions),
+                    'reward': {
+                      'title': rewardTitleCtrl.text.trim(),
+                      'message': rewardMsgCtrl.text.trim(),
+                      'icon': rewardIconCtrl.text.trim(),
+                      'targetShopId': rewardShopCtrl.text.trim(),
+                    },
+                    'oncePerUser': oncePerUser,
+                    'active': active,
+                  };
+
+                  if (isEdit) {
+                    await _firestore.collection('bonus_rules').doc(ruleId).update(data);
+                    AuditLogger.log(action: 'update', collection: 'bonus_rules', docId: ruleId, changes: data);
+                  } else {
+                    final ref = await _firestore.collection('bonus_rules').add(data);
+                    AuditLogger.log(action: 'create', collection: 'bonus_rules', docId: ref.id, changes: data);
+                  }
+                  Navigator.pop(ctx);
+                },
+                child: const Text('Сохранить'),
+              ),
+            ],
+          );
+        },
       ),
     );
   }
 
-  // ---------- Удаление правила ----------
+  // ---------- Удаление ----------
   Future<void> _deleteRule(String id) async {
     final confirm = await showDialog<bool>(
       context: context,
-      builder: (context) => AlertDialog(
+      builder: (ctx) => AlertDialog(
         title: const Text('Удалить правило?'),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Нет')),
-          TextButton(onPressed: () => Navigator.pop(context, true), child: const Text('Да')),
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Нет')),
+          TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Да')),
         ],
       ),
     );
     if (confirm == true) {
       await _firestore.collection('bonus_rules').doc(id).delete();
-      // 🆕 Аудит удаления
-      AuditLogger.log(
-        action: 'delete',
-        collection: 'bonus_rules',
-        docId: id,
-      );
+      AuditLogger.log(action: 'delete', collection: 'bonus_rules', docId: id);
     }
   }
 
-  // ---------- UI: список правил ----------
+  // ---------- UI ----------
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Бонусные правила'),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.add),
-            onPressed: _addRule,
+  title: const Text('Бонусные правила'),
+  leading: IconButton(
+    icon: const Icon(Icons.add, color: Color(0xFF6C63FF)), // фиолетовый значок
+    tooltip: 'Добавить правило',
+    onPressed: () => _showRuleDialog(),
           ),
-        ],
       ),
       body: StreamBuilder<QuerySnapshot>(
         stream: _firestore.collection('bonus_rules').snapshots(),
@@ -167,26 +243,48 @@ class _BonusRulesScreenState extends State<BonusRulesScreen> {
             itemBuilder: (context, index) {
               final doc = docs[index];
               final data = doc.data() as Map<String, dynamic>;
+              final reward = data['reward'] as Map<String, dynamic>? ?? {};
+              final conditions = data['conditions'] as Map<String, dynamic>? ?? {};
+              final trigger = data['trigger'] ?? '?';
+              final once = data['oncePerUser'] == true;
+              final active = data['active'] == true;
+
               return Card(
                 margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-                child: ListTile(
-                  title: Text(data['bonusDescription'] ?? ''),
-                  subtitle: Text(
-                    'Спонсор: ${data['sponsorShopId']} → Бонус: ${data['targetShopId']} | Шагов: ${data['requiredSteps']} | ${data['active'] == true ? "Активно" : "Неактивно"}',
-                  ),
-                  trailing: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      IconButton(
-                        icon: const Icon(Icons.edit),
-                        onPressed: () => _editRule(doc.id, data),
+                child: ExpansionTile(
+                  title: Text(reward['title'] ?? 'Без названия'),
+                  subtitle: Text('$trigger ${active ? "✅" : "⛔"}'),
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('Условия: ${conditions.isNotEmpty ? conditions.toString() : "нет"}'),
+                          const SizedBox(height: 8),
+                          Text('Награда: ${reward['message'] ?? ""}'),
+                          Text('Иконка: ${reward['icon'] ?? "🎁"}'),
+                          Text('Магазин: ${reward['targetShopId'] ?? "не указан"}'),
+                          const SizedBox(height: 8),
+                          Text('Однократно: $once'),
+                          const SizedBox(height: 8),
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.end,
+                            children: [
+                              IconButton(
+                                icon: const Icon(Icons.edit),
+                                onPressed: () => _showRuleDialog(ruleId: doc.id, existing: data),
+                              ),
+                              IconButton(
+                                icon: const Icon(Icons.delete, color: Colors.red),
+                                onPressed: () => _deleteRule(doc.id),
+                              ),
+                            ],
+                          ),
+                        ],
                       ),
-                      IconButton(
-                        icon: const Icon(Icons.delete, color: Colors.red),
-                        onPressed: () => _deleteRule(doc.id),
-                      ),
-                    ],
-                  ),
+                    ),
+                  ],
                 ),
               );
             },

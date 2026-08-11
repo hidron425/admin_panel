@@ -7,6 +7,9 @@ import 'collabs_screen.dart';
 import 'banners_screen.dart';   // 🆕 импорт экрана баннеров
 import 'analytics_screen.dart';
 import 'mall_map_editor_screen.dart';
+import 'user_management_screen.dart';
+import 'bonus_rules_screen.dart';
+import 'push_notification_screen.dart';
 
 class AdminScreen extends StatefulWidget {
   final User user;
@@ -107,6 +110,36 @@ ListTile(
   onTap: () {
     Navigator.pop(context);
     Navigator.push(context, MaterialPageRoute(builder: (_) => const MallMapEditorScreen()));
+  },
+),
+ListTile(
+  leading: const Icon(Icons.people),
+  title: const Text('Пользователи'),
+  onTap: () {
+    Navigator.pop(context);
+    Navigator.push(context, MaterialPageRoute(builder: (_) => const UserManagementScreen()));
+  },
+),
+ListTile(
+  leading: const Icon(Icons.card_giftcard),
+  title: const Text('Бонусные правила'),
+  onTap: () {
+    Navigator.pop(context);   // закрыть Drawer
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const BonusRulesScreen()),
+    );
+  },
+),
+ListTile(
+  leading: const Icon(Icons.notifications_active),
+  title: const Text('Push-уведомления'),
+  onTap: () {
+    Navigator.pop(context);
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const PushNotificationScreen()),
+    );
   },
 ),
           ],
