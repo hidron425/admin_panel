@@ -10,6 +10,9 @@ import 'mall_map_editor_screen.dart';
 import 'user_management_screen.dart';
 import 'bonus_rules_screen.dart';
 import 'push_notification_screen.dart';
+import 'daily_tasks_manager_screen.dart';
+import 'extended_analytics_screen.dart';
+import 'cms_screen.dart';
 
 class AdminScreen extends StatefulWidget {
   final User user;
@@ -140,6 +143,30 @@ ListTile(
       context,
       MaterialPageRoute(builder: (_) => const PushNotificationScreen()),
     );
+  },
+),
+ListTile(
+  leading: const Icon(Icons.task_alt),
+  title: const Text('Ежедневные задания'),
+  onTap: () {
+    Navigator.pop(context);
+    Navigator.push(context, MaterialPageRoute(builder: (_) => const DailyTasksManagerScreen()));
+  },
+),
+ListTile(
+  leading: const Icon(Icons.analytics_outlined),
+  title: const Text('Расширенная аналитика'),
+  onTap: () {
+    Navigator.pop(context);
+    Navigator.push(context, MaterialPageRoute(builder: (_) => const ExtendedAnalyticsScreen()));
+  },
+),
+ListTile(
+  leading: const Icon(Icons.edit_note),
+  title: const Text('Управление контентом'),
+  onTap: () {
+    Navigator.pop(context);
+    Navigator.push(context, MaterialPageRoute(builder: (_) => const CmsScreen()));
   },
 ),
           ],
