@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:admin_panel/utils/audit.dart';
+import 'package:admin_panel/utils/app_state.dart';   // 🆕 глобальное состояние
 
 class CmsScreen extends StatefulWidget {
   const CmsScreen({super.key});
@@ -14,6 +15,7 @@ class _CmsScreenState extends State<CmsScreen> {
   final _keyController = TextEditingController();
   final _textController = TextEditingController();
   String? _editingDocId;
+  String? _selectedMallId;   // 🆕 текущий выбранный ТЦ
 
   // Предопределённые ключи для удобства
   final List<String> _commonKeys = [
@@ -24,19 +26,46 @@ class _CmsScreenState extends State<CmsScreen> {
   ];
 
   @override
+  void initState() {
+    super.initState();
+    _selectedMallId = AppState.selectedMallId.value;
+    AppState.selectedMallId.addListener(_onMallChanged);
+  }
+
+  @override
   void dispose() {
+    AppState.selectedMallId.removeListener(_onMallChanged);
     _keyController.dispose();
     _textController.dispose();
     super.dispose();
   }
 
+  void _onMallChanged() {
+    if (_selectedMallId != AppState.selectedMallId.value) {
+      setState(() {
+        _selectedMallId = AppState.selectedMallId.value;
+        // Сбрасываем текущий редактируемый документ, т.к. контент может отличаться
+        _editingDocId = null;
+        _textController.clear();
+      });
+    }
+  }
+
   Future<void> _loadContent(String key) async {
-    final snap = await _firestore.collection('content').where('key', isEqualTo: key).limit(1).get();
+    Query query = _firestore.collection('content').where('key', isEqualTo: key);
+    if (_selectedMallId != null) {
+      query = query.where('mallId', isEqualTo: _selectedMallId);
+    } else {
+      // Если выбран "Все ТЦ", ищем контент без mallId (общий)
+      query = query.where('mallId', isNull: true);
+    }
+    final snap = await query.limit(1).get();
+
     if (snap.docs.isNotEmpty) {
       final doc = snap.docs.first;
       _editingDocId = doc.id;
       _keyController.text = key;
-      _textController.text = doc.data()['text'] ?? '';
+      _textController.text = (doc.data() as Map<String, dynamic>)['text'] ?? '';
     } else {
       _editingDocId = null;
       _keyController.text = key;
@@ -53,6 +82,8 @@ class _CmsScreenState extends State<CmsScreen> {
     final data = {
       'key': key,
       'text': text,
+      // 🆕 Сохраняем привязку к ТЦ (если выбран конкретный ТЦ)
+      'mallId': _selectedMallId,
       'updatedAt': FieldValue.serverTimestamp(),
     };
 
@@ -73,7 +104,7 @@ class _CmsScreenState extends State<CmsScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Управление контентом'),
+        title: Text(_selectedMallId == null ? 'Управление контентом (Все ТЦ)' : 'Управление контентом (${_selectedMallId})'),
       ),
       body: Row(
         children: [

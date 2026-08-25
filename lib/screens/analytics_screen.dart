@@ -5,6 +5,7 @@ import 'package:csv/csv.dart';
 import 'dart:html' as html;
 import 'dart:typed_data';
 import 'package:intl/intl.dart';
+import 'package:admin_panel/utils/app_state.dart';   // 🆕 глобальное состояние
 
 class AnalyticsScreen extends StatefulWidget {
   const AnalyticsScreen({super.key});
@@ -23,26 +24,58 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
   Map<String, int> shopTransitionsByDay = {};
 
   bool _isLoading = false;
+  String? _selectedMallId; // 🆕 текущий выбранный ТЦ
 
   @override
   void initState() {
     super.initState();
+    _selectedMallId = AppState.selectedMallId.value;
+    // Слушаем изменения выбранного ТЦ
+    AppState.selectedMallId.addListener(_onMallChanged);
     _loadData();
+  }
+
+  @override
+  void dispose() {
+    AppState.selectedMallId.removeListener(_onMallChanged);
+    super.dispose();
+  }
+
+  void _onMallChanged() {
+    if (_selectedMallId != AppState.selectedMallId.value) {
+      setState(() {
+        _selectedMallId = AppState.selectedMallId.value;
+      });
+      _loadData();
+    }
   }
 
   Future<void> _loadData() async {
     setState(() => _isLoading = true);
     final firestore = FirebaseFirestore.instance;
 
-    // Готовим список дней для осей графика
-    final days = <String>[];
-    for (var d = _startDate;
-        d.isBefore(_endDate) || d.isAtSameMomentAs(_endDate);
-        d = d.add(const Duration(days: 1))) {
-      days.add(DateFormat('yyyy-MM-dd').format(d));
+    // Получаем список shopId для выбранного ТЦ, если нужно
+    Set<String> shopIds = {};
+    if (_selectedMallId != null) {
+      final shopsSnap = await firestore
+          .collection('shops')
+          .where('mallId', isEqualTo: _selectedMallId)
+          .get();
+      shopIds = shopsSnap.docs.map((doc) => doc.id).toSet();
+      if (shopIds.isEmpty) {
+        // Если нет магазинов, то и данных нет
+        setState(() {
+          activeUsersByDay = {};
+          completedQuestsByDay = {};
+          bannerClicksByDay = {};
+          shopTransitionsByDay = {};
+          _isLoading = false;
+        });
+        return;
+      }
     }
 
-    // Универсальная функция агрегации по дням
+    // Универсальная функция агрегации
     Future<Map<String, int>> aggregate(
         Query collection, String dateField) async {
       final snap = await collection
@@ -64,15 +97,28 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
     }
 
     try {
-      final activeUsers = await aggregate(
-          firestore.collection('user_progress'), 'lastActive');
-      // Завершённые квесты – можно считать продажи или специальное поле;
-      // здесь используем sales как общее количество шагов (квестов)
-      final completedQuests = await aggregate(
-          firestore.collection('sales'), 'timestamp');
-      final bannerClicks = await aggregate(
-          firestore.collection('banner_clicks'), 'timestamp');
-      // Переходы в магазины – тоже sales (можно отделить, но пока так)
+      // Активные пользователи: фильтруем по selectedMallId, если ТЦ выбран
+      Query usersQuery = firestore.collection('user_progress');
+      if (_selectedMallId != null) {
+        usersQuery = usersQuery.where('selectedMallId', isEqualTo: _selectedMallId);
+      }
+      final activeUsers = await aggregate(usersQuery, 'lastActive');
+
+      // Завершённые квесты и переходы в магазины: sales
+      Query salesQuery = firestore.collection('sales');
+      if (_selectedMallId != null) {
+        salesQuery = salesQuery.where('shopId', whereIn: shopIds.toList());
+      }
+      final completedQuests = await aggregate(salesQuery, 'timestamp');
+
+      // Клики по баннерам
+      Query bannersQuery = firestore.collection('banner_clicks');
+      if (_selectedMallId != null) {
+        bannersQuery = bannersQuery.where('shopId', whereIn: shopIds.toList());
+      }
+      final bannerClicks = await aggregate(bannersQuery, 'timestamp');
+
+      // Переходы в магазины = completedQuests (по логике)
       final shopTransitions = completedQuests;
 
       setState(() {
@@ -220,7 +266,6 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
                     ],
                   ),
                   const SizedBox(height: 32),
-                  // График: активные пользователи по дням
                   Text('Активные пользователи',
                       style: Theme.of(context).textTheme.titleMedium),
                   const SizedBox(height: 8),
@@ -229,7 +274,6 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
                     child: _buildBarChart(activeUsersByDay),
                   ),
                   const SizedBox(height: 24),
-                  // График: клики по баннерам
                   Text('Клики по баннерам',
                       style: Theme.of(context).textTheme.titleMedium),
                   const SizedBox(height: 8),
@@ -237,7 +281,6 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
                     height: 250,
                     child: _buildBarChart(bannerClicksByDay),
                   ),
-                  // При желании добавьте графики для остальных метрик
                 ],
               ),
             ),

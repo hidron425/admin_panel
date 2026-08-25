@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:intl/intl.dart';
 import 'package:admin_panel/utils/audit.dart';
+import 'package:admin_panel/utils/app_state.dart';   // 🆕 глобальное состояние
 
 class UserManagementScreen extends StatefulWidget {
   const UserManagementScreen({super.key});
@@ -17,6 +18,7 @@ class _UserManagementScreenState extends State<UserManagementScreen>
   final _firestore = FirebaseFirestore.instance;
   final _searchController = TextEditingController();
   String _searchQuery = '';
+  String? _selectedMallId;   // 🆕 текущий выбранный ТЦ
 
   // Для вкладки «Действия»
   String? _selectedUserId;
@@ -28,6 +30,8 @@ class _UserManagementScreenState extends State<UserManagementScreen>
   void initState() {
     super.initState();
     _tabController = TabController(length: 2, vsync: this);
+    _selectedMallId = AppState.selectedMallId.value;
+    AppState.selectedMallId.addListener(_onMallChanged);
     _searchController.addListener(() {
       setState(() => _searchQuery = _searchController.text.trim().toLowerCase());
     });
@@ -35,11 +39,27 @@ class _UserManagementScreenState extends State<UserManagementScreen>
 
   @override
   void dispose() {
+    AppState.selectedMallId.removeListener(_onMallChanged);
     _tabController.dispose();
     _searchController.dispose();
     _bonusDescriptionController.dispose();
     _bonusValueController.dispose();
     super.dispose();
+  }
+
+  void _onMallChanged() {
+    if (_selectedMallId != AppState.selectedMallId.value) {
+      setState(() => _selectedMallId = AppState.selectedMallId.value);
+    }
+  }
+
+  // 🆕 Поток с фильтром по ТЦ
+  Stream<QuerySnapshot> _getUsersStream() {
+    Query query = _firestore.collection('user_progress');
+    if (_selectedMallId != null) {
+      query = query.where('selectedMallId', isEqualTo: _selectedMallId);
+    }
+    return query.snapshots();
   }
 
   // ---------- Вкладка «Пользователи» ----------
@@ -67,7 +87,7 @@ class _UserManagementScreenState extends State<UserManagementScreen>
         ),
         Expanded(
           child: StreamBuilder<QuerySnapshot>(
-            stream: _firestore.collection('user_progress').snapshots(),
+            stream: _getUsersStream(),
             builder: (context, snapshot) {
               if (snapshot.hasError) {
                 return Center(child: Text('Ошибка: ${snapshot.error}'));
@@ -95,6 +115,7 @@ class _UserManagementScreenState extends State<UserManagementScreen>
                   final cycleCount = data['cycleCount'] ?? 0;
                   final lastActive = (data['lastActive'] as Timestamp?)?.toDate();
                   final blocked = data['blocked'] == true;
+                  final userMallId = data['selectedMallId'] as String? ?? '—';
 
                   return Card(
                     margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
@@ -102,7 +123,8 @@ class _UserManagementScreenState extends State<UserManagementScreen>
                       title: Text(email, style: TextStyle(fontWeight: FontWeight.bold, color: blocked ? Colors.red : null)),
                       subtitle: Text(
                         'Шагов: $completedSteps | Циклов: $cycleCount\n'
-                        'Активен: ${lastActive != null ? DateFormat('dd.MM.yyyy HH:mm').format(lastActive) : 'никогда'}',
+                        'Активен: ${lastActive != null ? DateFormat('dd.MM.yyyy HH:mm').format(lastActive) : 'никогда'}\n'
+                        'ТЦ: $userMallId',
                       ),
                       trailing: blocked
                           ? const Chip(label: Text('Заблокирован', style: TextStyle(color: Colors.white)), backgroundColor: Colors.red)
@@ -127,7 +149,7 @@ class _UserManagementScreenState extends State<UserManagementScreen>
     );
   }
 
-  // ---------- Вкладка «Действия» ----------
+  // ---------- Вкладка «Действия» (без изменений) ----------
   Widget _buildActionsTab() {
     if (_selectedUserId == null) {
       return const Center(
@@ -220,7 +242,7 @@ class _UserManagementScreenState extends State<UserManagementScreen>
     );
   }
 
-  // ---------- Бизнес-логика ----------
+  // ---------- Бизнес-логика (без изменений, кроме уже существующего аудита) ----------
   Future<void> _toggleBlock(String userId, bool block) async {
     final action = block ? 'block' : 'unblock';
     await _firestore.collection('user_progress').doc(userId).update({'blocked': block});
@@ -304,7 +326,9 @@ class _UserManagementScreenState extends State<UserManagementScreen>
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Управление пользователями'),
+        title: Text(_selectedMallId == null
+            ? 'Управление пользователями (Все ТЦ)'
+            : 'Управление пользователями (${_selectedMallId})'),
         bottom: TabBar(
           controller: _tabController,
           tabs: const [

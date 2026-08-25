@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:admin_panel/utils/app_state.dart';   // 🆕 глобальное состояние
 
 class MallMapEditorScreen extends StatefulWidget {
   const MallMapEditorScreen({super.key});
@@ -25,22 +26,40 @@ class _MallMapEditorScreenState extends State<MallMapEditorScreen> {
 
   // Для изменения размера
   String? _resizingShopId;
-  String? _resizeHandle; // 'topLeft', 'topRight', 'bottomLeft', 'bottomRight', 'top', 'bottom', 'left', 'right'
-  Offset? _resizeStartPos; // позиция на экране в момент начала
-  Rect? _resizeStartRect;  // исходный прямоугольник магазина в экранных координатах
+  String? _resizeHandle;
+  Offset? _resizeStartPos;
+  Rect? _resizeStartRect;
 
   Size _imageSize = const Size(2045, 731);
 
   @override
   void initState() {
     super.initState();
+    _selectedMallId = AppState.selectedMallId.value;
+    AppState.selectedMallId.addListener(_onGlobalMallChanged);
     _loadMallIds();
   }
 
   @override
   void dispose() {
+    AppState.selectedMallId.removeListener(_onGlobalMallChanged);
     _mapImageUrlController.dispose();
     super.dispose();
+  }
+
+  void _onGlobalMallChanged() {
+    final globalMallId = AppState.selectedMallId.value;
+    if (_selectedMallId != globalMallId) {
+      setState(() {
+        _selectedMallId = globalMallId;
+        _loading = true;
+      });
+      if (_selectedMallId != null) {
+        _loadMallData();
+      } else {
+        setState(() => _loading = false);
+      }
+    }
   }
 
   Future<void> _loadMallIds() async {
@@ -52,7 +71,15 @@ class _MallMapEditorScreenState extends State<MallMapEditorScreen> {
         .toList();
     setState(() => _mallIds = ids);
     if (_mallIds.isNotEmpty) {
-      _selectedMallId = _mallIds.first;
+      // Если глобально выбран ТЦ и он есть в списке, используем его,
+      // иначе берём первый доступный
+      if (_selectedMallId != null && _mallIds.contains(_selectedMallId)) {
+        // оставляем как есть
+      } else {
+        _selectedMallId = _mallIds.first;
+        // Синхронизируем глобальное состояние
+        AppState.selectedMallId.value = _selectedMallId;
+      }
       await _loadMallData();
     } else {
       setState(() => _loading = false);
@@ -260,7 +287,6 @@ class _MallMapEditorScreenState extends State<MallMapEditorScreen> {
       _resizeStartRect!.width / (_shops.firstWhere((s) => s['id'] == shopId)['mapWidth'] ?? 0.1),
       _resizeStartRect!.height / (_shops.firstWhere((s) => s['id'] == shopId)['mapHeight'] ?? 0.1),
     );
-    // Преобразуем смещение в экранных координатах в изменение долей
     final delta = currentPos - _resizeStartPos!;
     final deltaFractional = Offset(
       delta.dx / containerSize.width,
@@ -273,19 +299,14 @@ class _MallMapEditorScreenState extends State<MallMapEditorScreen> {
     double w = (shop['mapWidth'] as num?)?.toDouble() ?? 0.1;
     double h = (shop['mapHeight'] as num?)?.toDouble() ?? 0.1;
 
-    // В зависимости от handle меняем размер и положение
     switch (_resizeHandle) {
       case 'bottomRight':
         w = (w + deltaFractional.dx).clamp(0.01, 1.0);
         h = (h + deltaFractional.dy).clamp(0.01, 1.0);
-        // центр смещается на половину изменения ширины/высоты? Нет, лучше оставить левый-верхний угол неподвижным.
-        // bottomRight – правый-нижний угол двигаем, left-top остаётся.
-        // Тогда новый центр будет:
         x = (shop['mapX'] - (shop['mapWidth'] ?? 0.1)/2 + w/2).clamp(0.0, 1.0);
         y = (shop['mapY'] - (shop['mapHeight'] ?? 0.1)/2 + h/2).clamp(0.0, 1.0);
         break;
       case 'topLeft':
-        // двигаем левый-верхний угол, правый-нижний фиксирован.
         double newW = (w - deltaFractional.dx).clamp(0.01, 1.0);
         double newH = (h - deltaFractional.dy).clamp(0.01, 1.0);
         x = (shop['mapX'] + (shop['mapWidth'] ?? 0.1)/2 - newW/2).clamp(0.0, 1.0);
@@ -356,6 +377,7 @@ class _MallMapEditorScreenState extends State<MallMapEditorScreen> {
               onChanged: (v) {
                 setState(() {
                   _selectedMallId = v;
+                  AppState.selectedMallId.value = v; // синхронизируем глобально
                   _loading = true;
                 });
                 _loadMallData();
@@ -422,7 +444,6 @@ class _MallMapEditorScreenState extends State<MallMapEditorScreen> {
                       Positioned.fill(child: _buildMapBackground()),
                       for (final shop in _shops)
                         if (shop['mapX'] != null && shop['mapY'] != null) ...[
-                          // Прямоугольник магазина
                           Positioned.fromRect(
                             rect: _shopRect(shop, Size(containerWidth, containerHeight)),
                             child: Listener(
@@ -465,7 +486,6 @@ class _MallMapEditorScreenState extends State<MallMapEditorScreen> {
                               ),
                             ),
                           ),
-                          // Ручки изменения размера
                           _buildResizeHandle('topLeft', _shopRect(shop, Size(containerWidth, containerHeight)), shop['id']),
                           _buildResizeHandle('topRight', _shopRect(shop, Size(containerWidth, containerHeight)), shop['id']),
                           _buildResizeHandle('bottomLeft', _shopRect(shop, Size(containerWidth, containerHeight)), shop['id']),

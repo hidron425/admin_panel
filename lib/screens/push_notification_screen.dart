@@ -4,6 +4,7 @@ import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:intl/intl.dart';
 import 'package:admin_panel/utils/audit.dart';
+import 'package:admin_panel/utils/app_state.dart';   // 🆕 глобальное состояние
 
 class PushNotificationScreen extends StatefulWidget {
   const PushNotificationScreen({super.key});
@@ -22,30 +23,41 @@ class _PushNotificationScreenState extends State<PushNotificationScreen> {
   // Сегментация
   String? _selectedCity;
   String? _selectedMall;
-  int? _minStepsCompleted; // минимальное количество завершённых шагов
-  int? _activeWithinDays;  // активен за последние N дней
+  int? _minStepsCompleted;
+  int? _activeWithinDays;
 
   bool _sending = false;
   bool _scheduled = false;
   DateTime? _scheduledDate;
   TimeOfDay? _scheduledTime;
 
-  // Шаблоны
   List<Map<String, dynamic>> _templates = [];
   bool _templatesLoaded = false;
 
   @override
   void initState() {
     super.initState();
+    _selectedMall = AppState.selectedMallId.value;   // 🆕 начальное значение
+    AppState.selectedMallId.addListener(_onGlobalMallChanged);   // 🆕 подписка
     _loadTemplates();
   }
 
   @override
   void dispose() {
+    AppState.selectedMallId.removeListener(_onGlobalMallChanged);   // 🆕 отписка
     _titleController.dispose();
     _bodyController.dispose();
     _templateNameController.dispose();
     super.dispose();
+  }
+
+  // 🆕 Обработчик изменения глобального ТЦ
+  void _onGlobalMallChanged() {
+    if (_selectedMall != AppState.selectedMallId.value) {
+      setState(() {
+        _selectedMall = AppState.selectedMallId.value;
+      });
+    }
   }
 
   Future<void> _loadTemplates() async {
@@ -87,7 +99,6 @@ class _PushNotificationScreenState extends State<PushNotificationScreen> {
       return;
     }
 
-    // Проверяем отложенную отправку
     DateTime? sendAt;
     if (_scheduled && _scheduledDate != null && _scheduledTime != null) {
       sendAt = DateTime(
@@ -125,7 +136,6 @@ class _PushNotificationScreenState extends State<PushNotificationScreen> {
       });
 
       if (result.data['success'] == true) {
-        // Аудит
         AuditLogger.log(
           action: _scheduled ? 'schedule_push' : 'send_push',
           collection: 'notifications',
@@ -179,7 +189,9 @@ class _PushNotificationScreenState extends State<PushNotificationScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Push-уведомления'),
+        title: Text(_selectedMall == null
+            ? 'Push-уведомления (Все ТЦ)'
+            : 'Push-уведомления (${_selectedMall})'),
       ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(16),

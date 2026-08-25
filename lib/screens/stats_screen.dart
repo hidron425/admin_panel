@@ -7,7 +7,8 @@ import 'package:fl_chart/fl_chart.dart';
 import 'dart:html' as html;
 import 'dart:typed_data';
 import 'package:cloud_functions/cloud_functions.dart';
-import 'package:admin_panel/utils/audit.dart';   // 🆕 сервис аудита
+import 'package:admin_panel/utils/audit.dart';
+import 'package:admin_panel/utils/app_state.dart';   // 🆕 глобальное состояние
 
 class StatsScreen extends StatefulWidget {
   final int initialTabIndex;
@@ -20,6 +21,7 @@ class StatsScreen extends StatefulWidget {
 class _StatsScreenState extends State<StatsScreen> with SingleTickerProviderStateMixin {
   late TabController _tabController;
   String? _shopId;
+  String? _selectedMallId;   // 🆕 текущий выбранный ТЦ
   String _period = 'week';
   int _firstSales = 0;
   int _secondarySales = 0;
@@ -32,13 +34,28 @@ class _StatsScreenState extends State<StatsScreen> with SingleTickerProviderStat
   void initState() {
     super.initState();
     _tabController = TabController(length: 3, vsync: this, initialIndex: widget.initialTabIndex);
+    _selectedMallId = AppState.selectedMallId.value;   // 🆕 инициализация
+    AppState.selectedMallId.addListener(_onMallChanged);   // 🆕 подписка
     _getShopId();
   }
 
   @override
   void dispose() {
+    AppState.selectedMallId.removeListener(_onMallChanged);   // 🆕 отписка
     _tabController.dispose();
     super.dispose();
+  }
+
+  // 🆕 Обработчик изменения ТЦ
+  void _onMallChanged() {
+    if (_selectedMallId != AppState.selectedMallId.value) {
+      setState(() => _selectedMallId = AppState.selectedMallId.value);
+      if (_shopId == null) {
+        // Если мы в режиме агрегатора, перезагружаем данные
+        _loadStats();
+        _loadActivations();
+      }
+    }
   }
 
   Future<void> _getShopId() async {
@@ -54,6 +71,10 @@ class _StatsScreenState extends State<StatsScreen> with SingleTickerProviderStat
       if (_shopId != null) {
         await _loadStats();
         await _loadActivations();
+      } else {
+        // Агрегатор: загружаем данные по выбранному ТЦ или всем ТЦ
+        await _loadStats();
+        await _loadActivations();
       }
     } else {
       if (mounted) setState(() => _loading = false);
@@ -61,84 +82,194 @@ class _StatsScreenState extends State<StatsScreen> with SingleTickerProviderStat
   }
 
   Future<void> _loadStats() async {
-    if (_shopId == null) return;
+    if (_shopId != null) {
+      // --- Режим магазина ---
+      final now = DateTime.now();
+      DateTime startDate;
+      switch (_period) {
+        case 'today':
+          startDate = DateTime(now.year, now.month, now.day);
+          break;
+        case 'week':
+          startDate = now.subtract(const Duration(days: 7));
+          break;
+        case 'month':
+          startDate = DateTime(now.year, now.month - 1, now.day);
+          break;
+        default:
+          startDate = DateTime(now.year, now.month, now.day);
+      }
 
-    final now = DateTime.now();
-    DateTime startDate;
-    switch (_period) {
-      case 'today':
-        startDate = DateTime(now.year, now.month, now.day);
-        break;
-      case 'week':
-        startDate = now.subtract(const Duration(days: 7));
-        break;
-      case 'month':
-        startDate = DateTime(now.year, now.month - 1, now.day);
-        break;
-      default:
-        startDate = DateTime(now.year, now.month, now.day);
-    }
+      final salesQuery = await FirebaseFirestore.instance
+          .collection('sales')
+          .where('shopId', isEqualTo: _shopId)
+          .where('timestamp', isGreaterThanOrEqualTo: Timestamp.fromDate(startDate))
+          .get();
 
-    final salesQuery = await FirebaseFirestore.instance
-        .collection('sales')
-        .where('shopId', isEqualTo: _shopId)
-        .where('timestamp', isGreaterThanOrEqualTo: Timestamp.fromDate(startDate))
-        .get();
+      int first = 0;
+      int secondary = 0;
+      Map<String, int> dailyCount = {};
 
-    int first = 0;
-    int secondary = 0;
-    Map<String, int> dailyCount = {};
+      for (var doc in salesQuery.docs) {
+        final step = doc['step'] as int? ?? 0;
+        final ts = (doc['timestamp'] as Timestamp).toDate();
+        final day = DateFormat('yyyy-MM-dd').format(ts);
+        dailyCount[day] = (dailyCount[day] ?? 0) + 1;
 
-    for (var doc in salesQuery.docs) {
-      final step = doc['step'] as int? ?? 0;
-      final ts = (doc['timestamp'] as Timestamp).toDate();
-      final day = DateFormat('yyyy-MM-dd').format(ts);
-      dailyCount[day] = (dailyCount[day] ?? 0) + 1;
+        if (step == 1) first++;
+        else if (step >= 2) secondary++;
+      }
 
-      if (step == 1) first++;
-      else if (step >= 2) secondary++;
-    }
+      final sortedDays = dailyCount.keys.toList()..sort();
+      final dailySales = sortedDays.map((day) => {
+        'day': day,
+        'count': dailyCount[day] ?? 0,
+      }).toList();
 
-    final sortedDays = dailyCount.keys.toList()..sort();
-    final dailySales = sortedDays.map((day) => {
-      'day': day,
-      'count': dailyCount[day] ?? 0,
-    }).toList();
+      if (mounted) {
+        setState(() {
+          _firstSales = first;
+          _secondarySales = secondary;
+          _totalSales = first + secondary;
+          _dailySales = dailySales;
+        });
+      }
+    } else {
+      // --- Режим агрегатора ---
+      // Загружаем ID магазинов выбранного ТЦ (или все, если ТЦ не выбран)
+      Set<String> shopIds = {};
+      Query shopsQuery = FirebaseFirestore.instance.collection('shops');
+      if (_selectedMallId != null) {
+        shopsQuery = shopsQuery.where('mallId', isEqualTo: _selectedMallId);
+      }
+      final shopsSnap = await shopsQuery.get();
+      shopIds = shopsSnap.docs.map((doc) => doc.id).toSet();
 
-    if (mounted) {
-      setState(() {
-        _firstSales = first;
-        _secondarySales = secondary;
-        _totalSales = first + secondary;
-        _dailySales = dailySales;
-      });
+      if (shopIds.isEmpty) {
+        setState(() {
+          _firstSales = 0;
+          _secondarySales = 0;
+          _totalSales = 0;
+          _dailySales = [];
+        });
+        return;
+      }
+
+      final now = DateTime.now();
+      DateTime startDate;
+      switch (_period) {
+        case 'today':
+          startDate = DateTime(now.year, now.month, now.day);
+          break;
+        case 'week':
+          startDate = now.subtract(const Duration(days: 7));
+          break;
+        case 'month':
+          startDate = DateTime(now.year, now.month - 1, now.day);
+          break;
+        default:
+          startDate = DateTime(now.year, now.month, now.day);
+      }
+
+      Query salesQuery = FirebaseFirestore.instance
+          .collection('sales')
+          .where('shopId', whereIn: shopIds.toList())
+          .where('timestamp', isGreaterThanOrEqualTo: Timestamp.fromDate(startDate));
+      final salesSnap = await salesQuery.get();
+
+      int first = 0;
+      int secondary = 0;
+      Map<String, int> dailyCount = {};
+
+      for (var doc in salesSnap.docs) {
+        final step = doc['step'] as int? ?? 0;
+        final ts = (doc['timestamp'] as Timestamp).toDate();
+        final day = DateFormat('yyyy-MM-dd').format(ts);
+        dailyCount[day] = (dailyCount[day] ?? 0) + 1;
+
+        if (step == 1) first++;
+        else if (step >= 2) secondary++;
+      }
+
+      final sortedDays = dailyCount.keys.toList()..sort();
+      final dailySales = sortedDays.map((day) => {
+        'day': day,
+        'count': dailyCount[day] ?? 0,
+      }).toList();
+
+      if (mounted) {
+        setState(() {
+          _firstSales = first;
+          _secondarySales = secondary;
+          _totalSales = first + secondary;
+          _dailySales = dailySales;
+        });
+      }
     }
   }
 
   Future<void> _loadActivations() async {
-    if (_shopId == null) return;
+    if (_shopId != null) {
+      // Режим магазина
+      final snapshot = await FirebaseFirestore.instance
+          .collection('sales')
+          .where('shopId', isEqualTo: _shopId)
+          .orderBy('timestamp', descending: true)
+          .get();
 
-    final snapshot = await FirebaseFirestore.instance
-        .collection('sales')
-        .where('shopId', isEqualTo: _shopId)
-        .orderBy('timestamp', descending: true)
-        .get();
+      final List<Map<String, dynamic>> list = [];
+      for (var doc in snapshot.docs) {
+        final step = doc['step'] as int? ?? 0;
+        list.add({
+          'id': doc.id,
+          'timestamp': (doc['timestamp'] as Timestamp).toDate(),
+          'step': step,
+          'type': step == 1 ? 'Первая' : 'Вторичная',
+          'userId': doc['userId'] ?? 'аноним',
+        });
+      }
+      if (mounted) {
+        setState(() {
+          _activations = list;
+        });
+      }
+    } else {
+      // Режим агрегатора
+      Set<String> shopIds = {};
+      Query shopsQuery = FirebaseFirestore.instance.collection('shops');
+      if (_selectedMallId != null) {
+        shopsQuery = shopsQuery.where('mallId', isEqualTo: _selectedMallId);
+      }
+      final shopsSnap = await shopsQuery.get();
+      shopIds = shopsSnap.docs.map((doc) => doc.id).toSet();
 
-    final List<Map<String, dynamic>> list = [];
-    for (var doc in snapshot.docs) {
-      final step = doc['step'] as int? ?? 0;
-      list.add({
-        'id': doc.id,
-        'timestamp': (doc['timestamp'] as Timestamp).toDate(),
-        'step': step,
-        'type': step == 1 ? 'Первая' : 'Вторичная',
-        'userId': doc['userId'] ?? 'аноним',
-      });
-    }
-    if (mounted) {
-      setState(() {
-        _activations = list;
-      });
+      if (shopIds.isEmpty) {
+        setState(() => _activations = []);
+        return;
+      }
+
+      final snapshot = await FirebaseFirestore.instance
+          .collection('sales')
+          .where('shopId', whereIn: shopIds.toList())
+          .orderBy('timestamp', descending: true)
+          .get();
+
+      final List<Map<String, dynamic>> list = [];
+      for (var doc in snapshot.docs) {
+        final step = doc['step'] as int? ?? 0;
+        list.add({
+          'id': doc.id,
+          'timestamp': (doc['timestamp'] as Timestamp).toDate(),
+          'step': step,
+          'type': step == 1 ? 'Первая' : 'Вторичная',
+          'userId': doc['userId'] ?? 'аноним',
+        });
+      }
+      if (mounted) {
+        setState(() {
+          _activations = list;
+        });
+      }
     }
   }
 
@@ -172,13 +303,17 @@ class _StatsScreenState extends State<StatsScreen> with SingleTickerProviderStat
     if (_loading) {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
-    if (_shopId == null) {
-      return const Scaffold(body: Center(child: Text('Не удалось определить магазин')));
+    if (_shopId == null && _selectedMallId == null) {
+      return const Scaffold(body: Center(child: Text('Выберите ТЦ или войдите как магазин')));
     }
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Статистика и уведомления'),
+        title: Text(_shopId != null
+            ? 'Статистика магазина'
+            : _selectedMallId == null
+                ? 'Статистика (Все ТЦ)'
+                : 'Статистика (${_selectedMallId})'),
         bottom: TabBar(
           controller: _tabController,
           tabs: const [
@@ -193,7 +328,7 @@ class _StatsScreenState extends State<StatsScreen> with SingleTickerProviderStat
         children: [
           _buildStatsTab(),
           _buildHistoryTab(),
-          const NotificationsForm(),
+          _shopId != null ? const NotificationsForm() : const Center(child: Text('Уведомления доступны только для магазинов')),
         ],
       ),
     );
@@ -317,7 +452,6 @@ class _StatsScreenState extends State<StatsScreen> with SingleTickerProviderStat
                     ),
                   ),
                 ),
-          // Добавляем статистику коллабораций
           FutureBuilder<int>(
             future: _getCollabClicks(),
             builder: (context, snapshot) {
@@ -344,16 +478,36 @@ class _StatsScreenState extends State<StatsScreen> with SingleTickerProviderStat
   }
 
   Future<int> _getCollabClicks() async {
-    if (_shopId == null) return 0;
-    final snapshot = await FirebaseFirestore.instance
-        .collection('active_collabs')
-        .where('fromShopId', isEqualTo: _shopId)
-        .get();
-    int total = 0;
-    for (var doc in snapshot.docs) {
-      total += (doc.data()['clicks'] as int? ?? 0);
+    if (_shopId != null) {
+      final snapshot = await FirebaseFirestore.instance
+          .collection('active_collabs')
+          .where('fromShopId', isEqualTo: _shopId)
+          .get();
+      int total = 0;
+      for (var doc in snapshot.docs) {
+        total += (doc.data()['clicks'] as int? ?? 0);
+      }
+      return total;
+    } else {
+      // Агрегатор: сумма по выбранному ТЦ или всем
+      Set<String> shopIds = {};
+      Query shopsQuery = FirebaseFirestore.instance.collection('shops');
+      if (_selectedMallId != null) {
+        shopsQuery = shopsQuery.where('mallId', isEqualTo: _selectedMallId);
+      }
+      final shopsSnap = await shopsQuery.get();
+      shopIds = shopsSnap.docs.map((doc) => doc.id).toSet();
+      if (shopIds.isEmpty) return 0;
+      final snapshot = await FirebaseFirestore.instance
+          .collection('active_collabs')
+          .where('fromShopId', whereIn: shopIds.toList())
+          .get();
+      int total = 0;
+      for (var doc in snapshot.docs) {
+        total += (doc.data()['clicks'] as int? ?? 0);
+      }
+      return total;
     }
-    return total;
   }
 
   Widget _buildHistoryTab() {
@@ -464,11 +618,10 @@ class _NotificationsFormState extends State<NotificationsForm> {
       });
 
       if (result.data['success'] == true) {
-        // 🆕 Аудит отправки push-уведомления
         AuditLogger.log(
           action: 'send_push',
           collection: 'user_progress',
-          docId: _shopId!,  // идентификатор магазина
+          docId: _shopId!,
           changes: {
             'title': _titleController.text.trim(),
             'body': _bodyController.text.trim(),

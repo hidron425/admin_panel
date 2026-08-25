@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:admin_panel/utils/audit.dart';
+import 'package:admin_panel/utils/app_state.dart';   // 🆕 глобальное состояние
 
 class DailyTasksManagerScreen extends StatefulWidget {
   const DailyTasksManagerScreen({super.key});
@@ -11,6 +12,35 @@ class DailyTasksManagerScreen extends StatefulWidget {
 
 class _DailyTasksManagerScreenState extends State<DailyTasksManagerScreen> {
   final _firestore = FirebaseFirestore.instance;
+  String? _selectedMallId;   // 🆕 текущий выбранный ТЦ
+
+  @override
+  void initState() {
+    super.initState();
+    _selectedMallId = AppState.selectedMallId.value;
+    AppState.selectedMallId.addListener(_onMallChanged);
+  }
+
+  @override
+  void dispose() {
+    AppState.selectedMallId.removeListener(_onMallChanged);
+    super.dispose();
+  }
+
+  void _onMallChanged() {
+    if (_selectedMallId != AppState.selectedMallId.value) {
+      setState(() => _selectedMallId = AppState.selectedMallId.value);
+    }
+  }
+
+  // 🆕 Метод для получения потока с фильтром по ТЦ
+  Stream<QuerySnapshot> _getTasksStream() {
+    Query query = _firestore.collection('daily_tasks');
+    if (_selectedMallId != null) {
+      query = query.where('mallId', isEqualTo: _selectedMallId);
+    }
+    return query.snapshots();
+  }
 
   Future<void> _addOrEditTask({String? taskId, Map<String, dynamic>? existing}) async {
     final isEdit = taskId != null;
@@ -86,6 +116,8 @@ class _DailyTasksManagerScreenState extends State<DailyTasksManagerScreen> {
                   'target': int.tryParse(targetCtrl.text) ?? 1,
                   'category': selectedType == 'visit_category' ? category : null,
                   'active': true,
+                  // 🆕 Привязка к выбранному ТЦ (если он выбран)
+                  'mallId': _selectedMallId,
                 };
                 if (isEdit) {
                   await _firestore.collection('daily_tasks').doc(taskId).update(data);
@@ -125,7 +157,9 @@ class _DailyTasksManagerScreenState extends State<DailyTasksManagerScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Ежедневные задания'),
+        title: Text(_selectedMallId == null
+            ? 'Ежедневные задания (Все ТЦ)'
+            : 'Ежедневные задания (${_selectedMallId})'),
         actions: [
           IconButton(
             icon: const Icon(Icons.add),
@@ -134,7 +168,7 @@ class _DailyTasksManagerScreenState extends State<DailyTasksManagerScreen> {
         ],
       ),
       body: StreamBuilder<QuerySnapshot>(
-        stream: _firestore.collection('daily_tasks').snapshots(),
+        stream: _getTasksStream(),
         builder: (context, snapshot) {
           if (snapshot.hasError) return Center(child: Text('Ошибка: ${snapshot.error}'));
           if (snapshot.connectionState == ConnectionState.waiting) return const Center(child: CircularProgressIndicator());

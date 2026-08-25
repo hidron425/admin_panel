@@ -2,7 +2,8 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:intl/intl.dart';
-import 'package:admin_panel/utils/audit.dart'; // если понадобится логирование
+import 'package:admin_panel/utils/audit.dart';
+import 'package:admin_panel/utils/app_state.dart';   // 🆕 глобальное состояние
 
 class ExtendedAnalyticsScreen extends StatefulWidget {
   const ExtendedAnalyticsScreen({super.key});
@@ -16,46 +17,74 @@ class _ExtendedAnalyticsScreenState extends State<ExtendedAnalyticsScreen> {
   DateTime _startDate = DateTime.now().subtract(const Duration(days: 30));
   DateTime _endDate = DateTime.now();
 
-  // Данные для таблицы
+  int? _selectedHour; // null = все часы
+  String? _selectedMallId;   // 🆕 текущий выбранный ТЦ
+
   List<Map<String, dynamic>> _shopStats = [];
   bool _loading = true;
-
-  // Данные для тепловой карты: {shopId: count}
   Map<String, int> _heatData = {};
-
-  // Список магазинов (для получения координат и названий)
   Map<String, Map<String, dynamic>> _shopsInfo = {};
 
   @override
   void initState() {
     super.initState();
+    _selectedMallId = AppState.selectedMallId.value;
+    AppState.selectedMallId.addListener(_onMallChanged);
     _loadData();
+  }
+
+  @override
+  void dispose() {
+    AppState.selectedMallId.removeListener(_onMallChanged);
+    super.dispose();
+  }
+
+  void _onMallChanged() {
+    if (_selectedMallId != AppState.selectedMallId.value) {
+      setState(() => _selectedMallId = AppState.selectedMallId.value);
+      _loadData();
+    }
   }
 
   Future<void> _loadData() async {
     setState(() => _loading = true);
     try {
-      // 1. Загружаем все магазины, чтобы иметь координаты и названия
-      final shopsSnap = await _firestore.collection('shops').get();
+      // 1. Загружаем магазины с учётом выбранного ТЦ
+      Query shopsQuery = _firestore.collection('shops');
+      if (_selectedMallId != null) {
+        shopsQuery = shopsQuery.where('mallId', isEqualTo: _selectedMallId);
+      }
+      final shopsSnap = await shopsQuery.get();
       final shopsMap = <String, Map<String, dynamic>>{};
       for (var doc in shopsSnap.docs) {
         shopsMap[doc.id] = doc.data() as Map<String, dynamic>;
       }
 
+      // Множество ID магазинов выбранного ТЦ (для фильтрации продаж)
+      final shopIds = shopsMap.keys.toSet();
+
       // 2. Получаем продажи за период
-      final salesSnap = await _firestore
+      Query salesQuery = _firestore
           .collection('sales')
           .where('timestamp', isGreaterThanOrEqualTo: Timestamp.fromDate(_startDate))
-          .where('timestamp', isLessThanOrEqualTo: Timestamp.fromDate(_endDate.add(const Duration(days: 1))))
-          .get();
+          .where('timestamp', isLessThanOrEqualTo: Timestamp.fromDate(_endDate.add(const Duration(days: 1))));
 
-      // Агрегируем: для каждого shopId считаем количество продаж и сумму (если есть поле amount)
+      final salesSnap = await salesQuery.get();
       final Map<String, int> salesCount = {};
       final Map<String, double> salesAmount = {};
+
       for (var doc in salesSnap.docs) {
-        final data = doc.data();
+        final data = doc.data() as Map<String, dynamic>;
         final shopId = data['shopId'] as String? ?? '';
         if (shopId.isEmpty) continue;
+        // Если выбран ТЦ, пропускаем продажи магазинов не из этого ТЦ
+        if (_selectedMallId != null && !shopIds.contains(shopId)) continue;
+
+        final ts = (data['timestamp'] as Timestamp?)?.toDate();
+        if (ts == null) continue;
+
+        if (_selectedHour != null && ts.hour != _selectedHour) continue;
+
         salesCount[shopId] = (salesCount[shopId] ?? 0) + 1;
         final amount = (data['amount'] as num?)?.toDouble();
         if (amount != null) {
@@ -79,7 +108,6 @@ class _ExtendedAnalyticsScreenState extends State<ExtendedAnalyticsScreen> {
           'avgAmount': avgAmount,
         });
       }
-      // Сортировка по количеству убыванию
       stats.sort((a, b) => (b['count'] as int).compareTo(a['count'] as int));
 
       setState(() {
@@ -100,7 +128,9 @@ class _ExtendedAnalyticsScreenState extends State<ExtendedAnalyticsScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Расширенная аналитика'),
+        title: Text(_selectedMallId == null
+            ? 'Расширенная аналитика (Все ТЦ)'
+            : 'Расширенная аналитика (${_selectedMallId})'),
         actions: [
           IconButton(
             icon: const Icon(Icons.refresh),
@@ -155,17 +185,44 @@ class _ExtendedAnalyticsScreenState extends State<ExtendedAnalyticsScreen> {
                       ),
                     ],
                   ),
+                  const SizedBox(height: 16),
+                  // Фильтр по времени суток
+                  Row(
+                    children: [
+                      const Text('Час суток: '),
+                      DropdownButton<int?>(
+                        value: _selectedHour,
+                        hint: const Text('Все часы'),
+                        items: [
+                          const DropdownMenuItem<int?>(
+                            value: null,
+                            child: Text('Все часы'),
+                          ),
+                          ...List.generate(24, (hour) {
+                            return DropdownMenuItem<int?>(
+                              value: hour,
+                              child: Text('$hour:00'),
+                            );
+                          }),
+                        ],
+                        onChanged: (val) {
+                          setState(() => _selectedHour = val);
+                          _loadData();
+                        },
+                      ),
+                    ],
+                  ),
                   const SizedBox(height: 24),
 
-                  // Тепловая карта (если есть магазины с координатами)
+                  // Тепловая карта
                   if (_shopsInfo.isNotEmpty) ...[
-                    const Text('Тепловая карта посещений', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                    const Text('Тепловая карта посещений',
+                        style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
                     const SizedBox(height: 8),
                     SizedBox(
                       height: 300,
                       child: LayoutBuilder(
                         builder: (context, constraints) {
-                          // Размеры карты по умолчанию (можно загружать из mall)
                           const double imageWidth = 2045;
                           const double imageHeight = 731;
                           final double scale = math.min(
@@ -179,7 +236,6 @@ class _ExtendedAnalyticsScreenState extends State<ExtendedAnalyticsScreen> {
 
                           return Stack(
                             children: [
-                              // Фон карты (если есть URL, иначе просто светлый фон)
                               Positioned(
                                 left: offsetX,
                                 top: offsetY,
@@ -187,7 +243,6 @@ class _ExtendedAnalyticsScreenState extends State<ExtendedAnalyticsScreen> {
                                 height: displayHeight,
                                 child: Container(color: Colors.grey[200]),
                               ),
-                              // Тепловые точки для каждого магазина
                               for (final shopId in _shopsInfo.keys)
                                 if (_shopsInfo[shopId]!['mapX'] != null &&
                                     _shopsInfo[shopId]!['mapY'] != null &&
@@ -219,7 +274,8 @@ class _ExtendedAnalyticsScreenState extends State<ExtendedAnalyticsScreen> {
                   ],
 
                   // Таблица сравнения магазинов
-                  const Text('Сравнение магазинов', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                  const Text('Сравнение магазинов',
+                      style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
                   const SizedBox(height: 8),
                   SingleChildScrollView(
                     scrollDirection: Axis.horizontal,
@@ -228,14 +284,12 @@ class _ExtendedAnalyticsScreenState extends State<ExtendedAnalyticsScreen> {
                         DataColumn(label: Text('Магазин')),
                         DataColumn(label: Text('Категория')),
                         DataColumn(label: Text('Активаций')),
-                        // DataColumn(label: Text('Средний чек')),   // раскомментировать, если добавите сумму
                       ],
                       rows: _shopStats.map((shop) {
                         return DataRow(cells: [
                           DataCell(Text(shop['name'])),
                           DataCell(Text(shop['category'])),
                           DataCell(Text(shop['count'].toString())),
-                          // DataCell(Text('${shop['avgAmount'].toStringAsFixed(2)} ₽')),
                         ]);
                       }).toList(),
                     ),
@@ -247,7 +301,6 @@ class _ExtendedAnalyticsScreenState extends State<ExtendedAnalyticsScreen> {
   }
 
   Color _getHeatColor(int count) {
-    // Простая шкала: чем больше count, тем краснее
     final double ratio = (count / 10).clamp(0.0, 1.0);
     return Color.lerp(Colors.green, Colors.red, ratio)!.withOpacity(0.6);
   }

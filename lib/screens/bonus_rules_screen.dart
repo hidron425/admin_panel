@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:admin_panel/utils/audit.dart';
+import 'package:admin_panel/utils/app_state.dart';   // 🆕 глобальное состояние
 
 // Типы условий и триггеров
 const List<String> triggerOptions = [
@@ -26,6 +27,26 @@ class BonusRulesScreen extends StatefulWidget {
 
 class _BonusRulesScreenState extends State<BonusRulesScreen> {
   final _firestore = FirebaseFirestore.instance;
+  String? _selectedMallId;   // 🆕 текущий выбранный ТЦ
+
+  @override
+  void initState() {
+    super.initState();
+    _selectedMallId = AppState.selectedMallId.value;
+    AppState.selectedMallId.addListener(_onMallChanged);
+  }
+
+  @override
+  void dispose() {
+    AppState.selectedMallId.removeListener(_onMallChanged);
+    super.dispose();
+  }
+
+  void _onMallChanged() {
+    if (_selectedMallId != AppState.selectedMallId.value) {
+      setState(() => _selectedMallId = AppState.selectedMallId.value);
+    }
+  }
 
   // ---------- Открыть диалог добавления / редактирования ----------
   Future<void> _showRuleDialog({String? ruleId, Map<String, dynamic>? existing}) async {
@@ -180,6 +201,8 @@ class _BonusRulesScreenState extends State<BonusRulesScreen> {
                     },
                     'oncePerUser': oncePerUser,
                     'active': active,
+                    // 🆕 Привязываем к выбранному ТЦ (если он выбран)
+                    'mallId': _selectedMallId,
                   };
 
                   if (isEdit) {
@@ -223,15 +246,15 @@ class _BonusRulesScreenState extends State<BonusRulesScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-  title: const Text('Бонусные правила'),
-  leading: IconButton(
-    icon: const Icon(Icons.add, color: Color(0xFF6C63FF)), // фиолетовый значок
-    tooltip: 'Добавить правило',
-    onPressed: () => _showRuleDialog(),
-          ),
+        title: const Text('Бонусные правила'),
+        leading: IconButton(
+          icon: const Icon(Icons.add, color: Color(0xFF6C63FF)),
+          tooltip: 'Добавить правило',
+          onPressed: () => _showRuleDialog(),
+        ),
       ),
       body: StreamBuilder<QuerySnapshot>(
-        stream: _firestore.collection('bonus_rules').snapshots(),
+        stream: _getRulesStream(),
         builder: (context, snapshot) {
           if (snapshot.hasError) return Center(child: Text('Ошибка: ${snapshot.error}'));
           if (snapshot.connectionState == ConnectionState.waiting) return const Center(child: CircularProgressIndicator());
@@ -248,12 +271,13 @@ class _BonusRulesScreenState extends State<BonusRulesScreen> {
               final trigger = data['trigger'] ?? '?';
               final once = data['oncePerUser'] == true;
               final active = data['active'] == true;
+              final mallId = data['mallId'] as String? ?? 'Все ТЦ';
 
               return Card(
                 margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
                 child: ExpansionTile(
                   title: Text(reward['title'] ?? 'Без названия'),
-                  subtitle: Text('$trigger ${active ? "✅" : "⛔"}'),
+                  subtitle: Text('$trigger ${active ? "✅" : "⛔"} | ТЦ: $mallId'),
                   children: [
                     Padding(
                       padding: const EdgeInsets.all(16),
@@ -292,5 +316,14 @@ class _BonusRulesScreenState extends State<BonusRulesScreen> {
         },
       ),
     );
+  }
+
+  // 🆕 Метод для получения потока с фильтром по ТЦ
+  Stream<QuerySnapshot> _getRulesStream() {
+    Query query = _firestore.collection('bonus_rules');
+    if (_selectedMallId != null) {
+      query = query.where('mallId', isEqualTo: _selectedMallId);
+    }
+    return query.snapshots();
   }
 }

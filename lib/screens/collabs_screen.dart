@@ -2,7 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:admin_panel/utils/audit.dart';   // 🆕 сервис аудита
+import 'package:admin_panel/utils/audit.dart';
+import 'package:admin_panel/utils/app_state.dart';   // 🆕 глобальное состояние
 
 class CollabsScreen extends StatefulWidget {
   const CollabsScreen({Key? key}) : super(key: key);
@@ -17,18 +18,48 @@ class _CollabsScreenState extends State<CollabsScreen>
   final _firestore = FirebaseFirestore.instance;
   final _functions = FirebaseFunctions.instance;
   String? _currentShopId;
+  String? _selectedMallId;   // 🆕 текущий выбранный ТЦ
+  List<String> _mallShopIds = []; // 🆕 ID магазинов выбранного ТЦ (для фильтрации)
 
   @override
   void initState() {
     super.initState();
     _tabController = TabController(length: 3, vsync: this);
+    _selectedMallId = AppState.selectedMallId.value;
+    AppState.selectedMallId.addListener(_onMallChanged);
     _getCurrentShopId();
+    _loadMallShops(); // загружаем ID магазинов ТЦ
   }
 
   @override
   void dispose() {
+    AppState.selectedMallId.removeListener(_onMallChanged);
     _tabController.dispose();
     super.dispose();
+  }
+
+  void _onMallChanged() {
+    if (_selectedMallId != AppState.selectedMallId.value) {
+      setState(() {
+        _selectedMallId = AppState.selectedMallId.value;
+        _mallShopIds = []; // сбросим, чтобы перезагрузить
+      });
+      _loadMallShops();
+    }
+  }
+
+  Future<void> _loadMallShops() async {
+    if (_selectedMallId == null) {
+      setState(() => _mallShopIds = []);
+      return;
+    }
+    final snap = await _firestore
+        .collection('shops')
+        .where('mallId', isEqualTo: _selectedMallId)
+        .get();
+    setState(() {
+      _mallShopIds = snap.docs.map((doc) => doc.id).toList();
+    });
   }
 
   Future<void> _getCurrentShopId() async {
@@ -43,14 +74,23 @@ class _CollabsScreenState extends State<CollabsScreen>
     }
   }
 
+  // 🆕 Фильтрация документов по принадлежности к выбранному ТЦ
+  bool _belongsToSelectedMall(Map<String, dynamic> data) {
+    if (_selectedMallId == null) return true; // все ТЦ
+    final fromId = data['fromShopId'] as String? ?? '';
+    final toId = data['toShopId'] as String? ?? '';
+    return _mallShopIds.contains(fromId) || _mallShopIds.contains(toId);
+  }
+
   @override
   Widget build(BuildContext context) {
-    if (_currentShopId == null) {
-      return const Scaffold(body: Center(child: CircularProgressIndicator()));
-    }
+    // Если выбран ТЦ, но магазин текущего пользователя не привязан, не блокируем экран полностью,
+    // а просто скрываем кнопку создания оферты.
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Коллаборации'),
+        title: Text(_selectedMallId == null
+            ? 'Коллаборации (Все ТЦ)'
+            : 'Коллаборации (${_selectedMallId})'),
         bottom: TabBar(
           controller: _tabController,
           tabs: const [
@@ -68,11 +108,13 @@ class _CollabsScreenState extends State<CollabsScreen>
           _buildOpenMarketTab(),
         ],
       ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: () => _showCreateOfferDialog(),
-        child: const Icon(Icons.add),
-        tooltip: 'Создать оферту',
-      ),
+      floatingActionButton: _currentShopId != null
+          ? FloatingActionButton(
+              onPressed: () => _showCreateOfferDialog(),
+              child: const Icon(Icons.add),
+              tooltip: 'Создать оферту',
+            )
+          : null, // для агрегатора скрываем
     );
   }
 
@@ -83,8 +125,14 @@ class _CollabsScreenState extends State<CollabsScreen>
       builder: (context, snapshot) {
         if (snapshot.hasError) return Center(child: Text('Ошибка: ${snapshot.error}'));
         if (snapshot.connectionState == ConnectionState.waiting) return const Center(child: CircularProgressIndicator());
-        final docs = snapshot.data!.docs;
+
+        final docs = snapshot.data!.docs.where((doc) {
+          final data = doc.data() as Map<String, dynamic>;
+          return _belongsToSelectedMall(data);
+        }).toList();
+
         if (docs.isEmpty) return const Center(child: Text('Нет активных коллабораций'));
+
         return ListView.builder(
           itemCount: docs.length,
           itemBuilder: (context, index) {
@@ -127,7 +175,6 @@ class _CollabsScreenState extends State<CollabsScreen>
     );
     if (confirm == true) {
       await _firestore.collection('active_collabs').doc(docId).delete();
-      // 🆕 Аудит удаления коллаборации
       AuditLogger.log(
         action: 'delete',
         collection: 'active_collabs',
@@ -145,8 +192,14 @@ class _CollabsScreenState extends State<CollabsScreen>
       builder: (context, snapshot) {
         if (snapshot.hasError) return Center(child: Text('Ошибка: ${snapshot.error}'));
         if (snapshot.connectionState == ConnectionState.waiting) return const Center(child: CircularProgressIndicator());
-        final docs = snapshot.data!.docs;
+
+        final docs = snapshot.data!.docs.where((doc) {
+          final data = doc.data() as Map<String, dynamic>;
+          return _belongsToSelectedMall(data);
+        }).toList();
+
         if (docs.isEmpty) return const Center(child: Text('Нет новых предложений'));
+
         return ListView.builder(
           itemCount: docs.length,
           itemBuilder: (context, index) {
@@ -180,7 +233,6 @@ class _CollabsScreenState extends State<CollabsScreen>
         'fromShopId': fromShopId,
         'toShopId': toShopId,
       });
-      // 🆕 Аудит принятия предложения (Cloud Function меняет данные, но действие инициировано админом)
       AuditLogger.log(
         action: 'accept_suggestion',
         collection: 'suggested_collabs',
@@ -203,7 +255,15 @@ class _CollabsScreenState extends State<CollabsScreen>
       builder: (context, snapshot) {
         if (snapshot.hasError) return Center(child: Text('Ошибка: ${snapshot.error}'));
         if (snapshot.connectionState == ConnectionState.waiting) return const Center(child: CircularProgressIndicator());
-        final docs = snapshot.data!.docs;
+
+        final docs = snapshot.data!.docs.where((doc) {
+          final data = doc.data() as Map<String, dynamic>;
+          final shopId = data['shopId'] as String? ?? '';
+          // Для оферт фильтруем по магазину-владельцу
+          if (_selectedMallId == null) return true;
+          return _mallShopIds.contains(shopId);
+        }).toList();
+
         if (docs.isEmpty) return const Center(child: Text('Нет активных оферт'));
 
         return FutureBuilder<QuerySnapshot>(
@@ -345,9 +405,10 @@ class _CollabsScreenState extends State<CollabsScreen>
                   'status': 'active',
                   'expires': Timestamp.fromDate(expires),
                   'createdAt': FieldValue.serverTimestamp(),
+                  // 🆕 Добавляем mallId из выбранного ТЦ (если есть)
+                  'mallId': _selectedMallId,
                 };
                 final docRef = await _firestore.collection('auction_offers').add(data);
-                // 🆕 Аудит создания оферты
                 AuditLogger.log(
                   action: 'create',
                   collection: 'auction_offers',
@@ -418,7 +479,6 @@ class _CollabsScreenState extends State<CollabsScreen>
                   'expires': Timestamp.fromDate(expires),
                 };
                 await _firestore.collection('auction_offers').doc(offerId).update(data);
-                // 🆕 Аудит редактирования оферты
                 AuditLogger.log(
                   action: 'update',
                   collection: 'auction_offers',
@@ -451,7 +511,6 @@ class _CollabsScreenState extends State<CollabsScreen>
     );
     if (confirm == true) {
       await _firestore.collection('auction_offers').doc(offerId).delete();
-      // 🆕 Аудит удаления оферты
       AuditLogger.log(
         action: 'delete',
         collection: 'auction_offers',
@@ -461,9 +520,8 @@ class _CollabsScreenState extends State<CollabsScreen>
     }
   }
 
-  // ==================== ОТКЛИК НА ОФЕРТУ (СТАТЬ ИСТОЧНИКОМ) ====================
+  // ==================== ОТКЛИК НА ОФЕРТУ ====================
   Future<void> _acceptOffer(String offerId, String targetShopId, int bid) async {
-    // Проверка категории текущего магазина
     final currentShopDoc = await _firestore.collection('shops').doc(_currentShopId).get();
     if (!currentShopDoc.exists) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Ошибка: ваш магазин не найден')));
@@ -484,7 +542,6 @@ class _CollabsScreenState extends State<CollabsScreen>
       return;
     }
 
-    // Проверка, не принимал ли этот магазин уже эту оферту
     final existingCollab = await _firestore.collection('active_collabs')
         .where('fromShopId', isEqualTo: _currentShopId)
         .where('offerId', isEqualTo: offerId)
@@ -495,7 +552,6 @@ class _CollabsScreenState extends State<CollabsScreen>
       return;
     }
 
-    // Подтверждение
     final confirm = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
@@ -510,7 +566,6 @@ class _CollabsScreenState extends State<CollabsScreen>
     if (confirm != true) return;
 
     try {
-      // Создаём активную коллаборацию
       final collabData = {
         'fromShopId': _currentShopId,
         'toShopId': targetShopId,
@@ -522,7 +577,6 @@ class _CollabsScreenState extends State<CollabsScreen>
         'createdAt': FieldValue.serverTimestamp(),
       };
       final collabDocRef = await _firestore.collection('active_collabs').add(collabData);
-      // 🆕 Аудит создания коллаборации
       AuditLogger.log(
         action: 'create',
         collection: 'active_collabs',
@@ -530,14 +584,12 @@ class _CollabsScreenState extends State<CollabsScreen>
         changes: collabData,
       );
 
-      // Деактивируем оферту, чтобы её больше никто не мог принять
       final offerUpdate = {
         'status': 'taken',
         'takenBy': _currentShopId,
         'takenAt': FieldValue.serverTimestamp(),
       };
       await _firestore.collection('auction_offers').doc(offerId).update(offerUpdate);
-      // 🆕 Аудит изменения статуса оферты
       AuditLogger.log(
         action: 'update',
         collection: 'auction_offers',

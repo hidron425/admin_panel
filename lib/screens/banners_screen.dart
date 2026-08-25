@@ -2,7 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'dart:math' as math;
 import 'dart:async';
-import 'package:admin_panel/utils/audit.dart';   // 🆕 сервис аудита
+import 'package:admin_panel/utils/audit.dart';
+import 'package:admin_panel/utils/app_state.dart';   // 🆕 глобальное состояние
 
 // ----------------------------------------------------------------------
 // Модель BannerAd (локальная, чтобы не зависеть от других файлов)
@@ -90,25 +91,40 @@ class _BannersScreenState extends State<BannersScreen> {
   bool _sortAsc = false;
   String? _hoveredId;
 
+  String? _selectedMallId;   // 🆕 текущий выбранный ТЦ
+
   @override
   void initState() {
     super.initState();
+    _selectedMallId = AppState.selectedMallId.value;
+    AppState.selectedMallId.addListener(_onMallChanged);
     _loadBanners();
     _searchController.addListener(_onSearchChanged);
   }
 
   @override
   void dispose() {
+    AppState.selectedMallId.removeListener(_onMallChanged);
     _searchController.dispose();
     _scrollController.dispose();
     super.dispose();
   }
 
+  void _onMallChanged() {
+    if (_selectedMallId != AppState.selectedMallId.value) {
+      setState(() => _selectedMallId = AppState.selectedMallId.value);
+      _loadBanners();
+    }
+  }
+
   Future<void> _loadBanners() async {
     setState(() => _isLoading = true);
     try {
-      final snapshot = await _firestore
-          .collection('banners')
+      Query bannersQuery = _firestore.collection('banners');
+      if (_selectedMallId != null) {
+        bannersQuery = bannersQuery.where('mallId', isEqualTo: _selectedMallId);
+      }
+      final snapshot = await bannersQuery
           .orderBy(_sortBy, descending: !_sortAsc)
           .get();
       final banners = snapshot.docs.map((doc) => BannerAd.fromFirestore(doc)).toList();
@@ -191,7 +207,6 @@ class _BannersScreenState extends State<BannersScreen> {
     if (confirm != true) return;
     try {
       await _firestore.collection('banners').doc(id).delete();
-      // 🆕 Аудит удаления
       AuditLogger.log(
         action: 'delete',
         collection: 'banners',
@@ -210,7 +225,6 @@ class _BannersScreenState extends State<BannersScreen> {
   Future<void> _toggleActive(String id, bool current) async {
     try {
       await _firestore.collection('banners').doc(id).update({'isActive': !current});
-      // 🆕 Аудит изменения активности
       AuditLogger.log(
         action: 'update',
         collection: 'banners',
@@ -249,6 +263,7 @@ class _BannersScreenState extends State<BannersScreen> {
         builder: (_) => BannerEditorScreen(
           banner: banner,
           onSaved: _loadBanners,
+          mallId: _selectedMallId,   // 🆕 передаём выбранный ТЦ
         ),
       ),
     );
@@ -564,13 +579,19 @@ class _BannerCard extends StatelessWidget {
 }
 
 // ----------------------------------------------------------------------
-// BannerEditorScreen – редактор баннера (аудит в _saveBanner)
+// BannerEditorScreen – редактор баннера (с поддержкой mallId)
 // ----------------------------------------------------------------------
 class BannerEditorScreen extends StatefulWidget {
   final BannerAd? banner;
   final VoidCallback? onSaved;
+  final String? mallId;   // 🆕 выбранный ТЦ
 
-  const BannerEditorScreen({super.key, this.banner, this.onSaved});
+  const BannerEditorScreen({
+    super.key,
+    this.banner,
+    this.onSaved,
+    this.mallId,
+  });
 
   @override
   State<BannerEditorScreen> createState() => _BannerEditorScreenState();
@@ -665,8 +686,14 @@ class _BannerEditorScreenState extends State<BannerEditorScreen> {
     if (_selectedShop != null) {
       data['targetShopId'] = _selectedShop!['id'];
       data['shopName'] = _selectedShop!['name'];
+      // 🆕 Если у выбранного магазина есть mallId, используем его
+      data['mallId'] = _selectedShop!['mallId'] ?? widget.mallId;
     } else if (_isEditing) {
       data['targetShopId'] = widget.banner!.targetShopId;
+      data['mallId'] = widget.banner!.mallId;
+    } else {
+      // 🆕 Новый баннер без привязки к магазину – берём выбранный ТЦ
+      data['mallId'] = widget.mallId;
     }
     try {
       String action;
@@ -681,7 +708,6 @@ class _BannerEditorScreenState extends State<BannerEditorScreen> {
         action = 'create';
         docId = docRef.id;
       }
-      // 🆕 Аудит создания/обновления
       AuditLogger.log(
         action: action,
         collection: 'banners',
@@ -894,7 +920,7 @@ class _BannerEditorScreenState extends State<BannerEditorScreen> {
       discount: _discountCtrl.text,
       color: _selectedColor.value,
       targetShopId: '',
-      mallId: '',
+      mallId: widget.mallId ?? '',
       imageUrl: _imageUrlCtrl.text.trim(),
       cropRectData: _cropRectData,
     );
@@ -994,7 +1020,7 @@ class _BannerEditorScreenState extends State<BannerEditorScreen> {
 }
 
 // ----------------------------------------------------------------------
-// _BannerItemPreview – заглушка для предпросмотра в редакторе (без изменений)
+// _BannerItemPreview – заглушка для предпросмотра в редакторе
 // ----------------------------------------------------------------------
 class _BannerItemPreview extends StatelessWidget {
   final BannerAd banner;
@@ -1108,7 +1134,7 @@ class _BannerItemPreview extends StatelessWidget {
 }
 
 // ----------------------------------------------------------------------
-// _ImageEditorDialog – редактор изображения баннера
+// _ImageEditorDialog – редактор изображения баннера (без изменений)
 // ----------------------------------------------------------------------
 class _ImageEditorDialog extends StatefulWidget {
   final String title;
@@ -1376,7 +1402,7 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
 }
 
 // ----------------------------------------------------------------------
-// Рисовальщики
+// Рисовальщики (без изменений)
 // ----------------------------------------------------------------------
 class _DashedBorderPainter extends CustomPainter {
   @override
@@ -1413,7 +1439,7 @@ class _OverlayPainter extends CustomPainter {
 }
 
 // ----------------------------------------------------------------------
-// Диалог выбора цвета
+// Диалог выбора цвета (без изменений)
 // ----------------------------------------------------------------------
 Future<Color?> showColorPickerDialog(BuildContext context, Color current) {
   final presetColors = [
@@ -1463,7 +1489,7 @@ Future<Color?> showColorPickerDialog(BuildContext context, Color current) {
 }
 
 // ----------------------------------------------------------------------
-// BannerImagePreview – универсальный виджет для обрезки (используется и в админке, и в клиенте)
+// BannerImagePreview – универсальный виджет для обрезки (без изменений)
 // ----------------------------------------------------------------------
 class BannerImagePreview extends StatefulWidget {
   final String imageUrl;
