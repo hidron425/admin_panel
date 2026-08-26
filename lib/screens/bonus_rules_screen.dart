@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:admin_panel/utils/audit.dart';
-import 'package:admin_panel/utils/app_state.dart';   // 🆕 глобальное состояние
+import 'package:admin_panel/utils/app_state.dart';
 
 // Типы условий и триггеров
 const List<String> triggerOptions = [
@@ -27,7 +27,7 @@ class BonusRulesScreen extends StatefulWidget {
 
 class _BonusRulesScreenState extends State<BonusRulesScreen> {
   final _firestore = FirebaseFirestore.instance;
-  String? _selectedMallId;   // 🆕 текущий выбранный ТЦ
+  String? _selectedMallId;
 
   @override
   void initState() {
@@ -48,23 +48,28 @@ class _BonusRulesScreenState extends State<BonusRulesScreen> {
     }
   }
 
+  // Проверяем, подходит ли правило под выбранный ТЦ
+  bool _ruleAppliesToMall(Map<String, dynamic> data) {
+    final ruleMallId = data['mallId'] as String?;
+    if (_selectedMallId == null) return true; // все ТЦ
+    return ruleMallId == null || ruleMallId == _selectedMallId; // общее или конкретное
+  }
+
   // ---------- Открыть диалог добавления / редактирования ----------
   Future<void> _showRuleDialog({String? ruleId, Map<String, dynamic>? existing}) async {
     final isEdit = ruleId != null;
     final formKey = GlobalKey<FormState>();
 
-    // Контроллеры для reward
     final rewardTitleCtrl = TextEditingController(text: existing?['reward']?['title'] ?? '');
     final rewardMsgCtrl = TextEditingController(text: existing?['reward']?['message'] ?? '');
     final rewardIconCtrl = TextEditingController(text: existing?['reward']?['icon'] ?? '🎁');
     final rewardShopCtrl = TextEditingController(text: existing?['reward']?['targetShopId'] ?? '');
 
-    // Выбранный триггер
     String selectedTrigger = existing?['trigger'] ?? 'step_completed';
     bool oncePerUser = existing?['oncePerUser'] ?? true;
     bool active = existing?['active'] ?? true;
+    bool isCommon = existing?['mallId'] == null || existing?['mallId'] == ''; // общее правило
 
-    // Список условий (редактируемый)
     List<MapEntry<String, String>> conditions = [];
     final existingCond = existing?['conditions'] as Map<String, dynamic>?;
     if (existingCond != null) {
@@ -167,6 +172,13 @@ class _BonusRulesScreenState extends State<BonusRulesScreen> {
                       ],
                     ),
                     const SizedBox(height: 16),
+                    // Переключатель "Общее правило"
+                    SwitchListTile(
+                      title: const Text('Общее правило (для всех ТЦ)'),
+                      subtitle: const Text('Если включено, правило не привязано к конкретному ТЦ'),
+                      value: isCommon,
+                      onChanged: (v) => setDialogState(() => isCommon = v),
+                    ),
                     Row(
                       children: [
                         const Text('Однократно'),
@@ -201,8 +213,8 @@ class _BonusRulesScreenState extends State<BonusRulesScreen> {
                     },
                     'oncePerUser': oncePerUser,
                     'active': active,
-                    // 🆕 Привязываем к выбранному ТЦ (если он выбран)
-                    'mallId': _selectedMallId,
+                    // Если правило общее, mallId = null, иначе выбранный ТЦ
+                    'mallId': isCommon ? null : _selectedMallId,
                   };
 
                   if (isEdit) {
@@ -246,7 +258,9 @@ class _BonusRulesScreenState extends State<BonusRulesScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Бонусные правила'),
+        title: Text(_selectedMallId == null
+            ? 'Бонусные правила (Все ТЦ)'
+            : 'Бонусные правила (${_selectedMallId})'),
         leading: IconButton(
           icon: const Icon(Icons.add, color: Color(0xFF6C63FF)),
           tooltip: 'Добавить правило',
@@ -254,24 +268,31 @@ class _BonusRulesScreenState extends State<BonusRulesScreen> {
         ),
       ),
       body: StreamBuilder<QuerySnapshot>(
-        stream: _getRulesStream(),
+        stream: _firestore.collection('bonus_rules').snapshots(),
         builder: (context, snapshot) {
           if (snapshot.hasError) return Center(child: Text('Ошибка: ${snapshot.error}'));
           if (snapshot.connectionState == ConnectionState.waiting) return const Center(child: CircularProgressIndicator());
-          final docs = snapshot.data!.docs;
-          if (docs.isEmpty) return const Center(child: Text('Нет правил'));
+
+          // Фильтруем правила по выбранному ТЦ
+          final allDocs = snapshot.data!.docs;
+          final filteredDocs = allDocs.where((doc) {
+            final data = doc.data() as Map<String, dynamic>;
+            return _ruleAppliesToMall(data);
+          }).toList();
+
+          if (filteredDocs.isEmpty) return const Center(child: Text('Нет правил'));
 
           return ListView.builder(
-            itemCount: docs.length,
+            itemCount: filteredDocs.length,
             itemBuilder: (context, index) {
-              final doc = docs[index];
+              final doc = filteredDocs[index];
               final data = doc.data() as Map<String, dynamic>;
               final reward = data['reward'] as Map<String, dynamic>? ?? {};
               final conditions = data['conditions'] as Map<String, dynamic>? ?? {};
               final trigger = data['trigger'] ?? '?';
               final once = data['oncePerUser'] == true;
               final active = data['active'] == true;
-              final mallId = data['mallId'] as String? ?? 'Все ТЦ';
+              final mallId = data['mallId'] as String? ?? 'Общее';
 
               return Card(
                 margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
@@ -316,14 +337,5 @@ class _BonusRulesScreenState extends State<BonusRulesScreen> {
         },
       ),
     );
-  }
-
-  // 🆕 Метод для получения потока с фильтром по ТЦ
-  Stream<QuerySnapshot> _getRulesStream() {
-    Query query = _firestore.collection('bonus_rules');
-    if (_selectedMallId != null) {
-      query = query.where('mallId', isEqualTo: _selectedMallId);
-    }
-    return query.snapshots();
   }
 }

@@ -5,11 +5,8 @@ import 'package:intl/intl.dart';
 import 'dart:math' as math;
 import 'promotions_screen.dart';
 import 'stats_screen.dart';
-import 'package:admin_panel/utils/audit.dart';   // 🆕 сервис аудита
+import 'package:admin_panel/utils/audit.dart';
 
-// ----------------------------------------------------------------------
-// ОСНОВНОЙ ЭКРАН МАГАЗИНА (StoreScreen)
-// ----------------------------------------------------------------------
 class StoreScreen extends StatefulWidget {
   final Function(int) onTabSelected;
   const StoreScreen({Key? key, required this.onTabSelected}) : super(key: key);
@@ -25,7 +22,6 @@ class _StoreScreenState extends State<StoreScreen> {
   bool _loading = true;
   Map<String, dynamic> _shopData = {};
 
-  // Текстовые контроллеры
   final _nameController = TextEditingController();
   final _imageUrlController = TextEditingController();
   final _descriptionController = TextEditingController();
@@ -33,17 +29,14 @@ class _StoreScreenState extends State<StoreScreen> {
   final _discountController = TextEditingController();
   final _infoImageUrlController = TextEditingController();
 
-  // Координаты на карте
   final _mapXController = TextEditingController();
   final _mapYController = TextEditingController();
   final _mapWidthController = TextEditingController();
   final _mapHeightController = TextEditingController();
 
-  // Контроллеры трансформаций (матрицы 4x4)
   final TransformationController _logoTransformController = TransformationController();
   final TransformationController _infoImageTransformController = TransformationController();
 
-  // Статистика
   int _todayActivations = 0;
   int _newClientsWeek = 0;
   Map<String, dynamic>? _nearestPromotion;
@@ -130,8 +123,7 @@ class _StoreScreenState extends State<StoreScreen> {
 
   void _restoreTransform(TransformationController controller, dynamic raw) {
     if (raw is List && raw.length == 16) {
-      final matrix = Matrix4.fromList(raw.cast<double>());
-      controller.value = matrix;
+      controller.value = Matrix4.fromList(raw.cast<double>());
     } else {
       controller.value = Matrix4.identity();
     }
@@ -217,8 +209,6 @@ class _StoreScreenState extends State<StoreScreen> {
     };
 
     await _firestore.collection('shops').doc(_storeId).update(updatedData);
-
-    // 🆕 Аудит изменения магазина
     AuditLogger.log(
       action: 'update',
       collection: 'shops',
@@ -227,13 +217,14 @@ class _StoreScreenState extends State<StoreScreen> {
     );
 
     if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Все изменения сохранены')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Все изменения сохранены')),
+      );
     }
     _shopData.addAll(updatedData);
     setState(() {});
   }
 
-  // ==================== НОВЫЙ РЕДАКТОР ИЗОБРАЖЕНИЯ (МАТЕМАТИЧЕСКИ ТОЧНЫЙ) ====================
   Future<void> _openImageEditor({
     required String title,
     required TransformationController controller,
@@ -278,7 +269,9 @@ class _StoreScreenState extends State<StoreScreen> {
   Future<void> _onUpgradePriority() async {
     final currentPriority = _shopData['priority'] ?? 1;
     if (currentPriority >= 5) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Максимальный приоритет уже достигнут')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Максимальный приоритет уже достигнут')),
+      );
       return;
     }
     final confirm = await showDialog<bool>(
@@ -294,17 +287,16 @@ class _StoreScreenState extends State<StoreScreen> {
     );
     if (confirm == true) {
       await _firestore.collection('shops').doc(_storeId).update({'priority': currentPriority + 1});
-
-      // 🆕 Аудит повышения приоритета
       AuditLogger.log(
         action: 'update',
         collection: 'shops',
         docId: _storeId!,
         changes: {'priority': currentPriority + 1},
       );
-
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Приоритет повышен!')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Приоритет повышен!')),
+        );
         setState(() => _shopData['priority'] = currentPriority + 1);
       }
     }
@@ -320,434 +312,404 @@ class _StoreScreenState extends State<StoreScreen> {
           children: [
             const Text('Не удалось определить ваш магазин. Обратитесь к администратору.'),
             const SizedBox(height: 16),
-            ElevatedButton(onPressed: () => FirebaseAuth.instance.signOut(), child: const Text('Выйти')),
+            ElevatedButton(
+              onPressed: () => FirebaseAuth.instance.signOut(),
+              child: const Text('Выйти'),
+            ),
           ],
         ),
       );
     }
 
     final priority = _shopData['priority'] ?? 1;
+    final shopName = _shopData['name'] ?? 'Мой магазин';
 
     return SingleChildScrollView(
       padding: const EdgeInsets.all(16),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Логотип для главного экрана
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text('🖼️ Логотип для главного экрана', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-                  const SizedBox(height: 4),
-                  const Text('Это изображение будет показываться в карточках магазина на главном экране приложения.',
-                      style: TextStyle(fontSize: 12, color: Colors.grey)),
-                  const SizedBox(height: 8),
-                  TextFormField(
-                    controller: _imageUrlController,
-                    decoration: InputDecoration(
-                      border: const OutlineInputBorder(),
-                      hintText: 'https://...',
-                      hintStyle: TextStyle(color: Colors.grey[400], fontStyle: FontStyle.italic),
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      SizedBox(
-                        width: 130,
-                        height: 100,
-                        child: ClipRRect(
-                          borderRadius: BorderRadius.circular(12),
-                          child: _imageUrlController.text.isNotEmpty
-                              ? Transform(
-                                  transform: _logoTransformController.value,
-                                  child: Image.network(_imageUrlController.text, fit: BoxFit.cover,
-                                      errorBuilder: (_, __, ___) => Container(color: Colors.grey[200], child: const Icon(Icons.broken_image))))
-                              : Container(color: Colors.grey[200], child: const Icon(Icons.image)),
-                        ),
-                      ),
-                      const SizedBox(width: 16),
-                      ElevatedButton.icon(
-                        onPressed: () => _openImageEditor(
-                          title: 'Редактировать логотип',
-                          controller: _logoTransformController,
-                          imageUrl: _imageUrlController.text,
-                        ),
-                        icon: const Icon(Icons.edit),
-                        label: const Text('Редактировать'),
-                      ),
-                    ],
-                  ),
-                ],
+          // Приветствие и кнопка сохранения
+          Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('Добро пожаловать!', style: TextStyle(fontSize: 18, color: Colors.grey)),
+                    Text(shopName, style: const TextStyle(fontSize: 28, fontWeight: FontWeight.bold)),
+                  ],
+                ),
               ),
-            ),
-          ),
-
-          // Информация о магазине для пользователей (поля с бледными подсказками)
-          Card(
-            color: Colors.blue.shade50,
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Row(
-                    children: [
-                      Icon(Icons.info_outline, color: Colors.blue),
-                      SizedBox(width: 8),
-                      Text('📋 Информация о магазине для пользователей',
-                          style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-                    ],
-                  ),
-                  const SizedBox(height: 4),
-                  const Text('Эти данные увидят покупатели, когда нажмут на значок информации (i) в приложении.',
-                      style: TextStyle(fontSize: 12, color: Colors.grey)),
-                  const SizedBox(height: 16),
-                  const Text('Название магазина', style: TextStyle(fontWeight: FontWeight.w600)),
-                  const SizedBox(height: 8),
-                  TextFormField(
-                    controller: _nameController,
-                    decoration: InputDecoration(
-                      border: const OutlineInputBorder(),
-                      hintText: 'Например: "Кофейня Арома"',
-                      hintStyle: TextStyle(color: Colors.grey[400], fontStyle: FontStyle.italic),
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  const Text('Описание магазина', style: TextStyle(fontWeight: FontWeight.w600)),
-                  const SizedBox(height: 8),
-                  TextFormField(
-                    controller: _descriptionController,
-                    maxLines: 3,
-                    decoration: InputDecoration(
-                      border: const OutlineInputBorder(),
-                      hintText: 'Расскажите о вашем магазине, особенностях, атмосфере',
-                      hintStyle: TextStyle(color: Colors.grey[400], fontStyle: FontStyle.italic),
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  const Text('Краткая скидка (на карточке)', style: TextStyle(fontWeight: FontWeight.w600)),
-                  const SizedBox(height: 8),
-                  TextFormField(
-                    controller: _shortDiscountController,
-                    decoration: InputDecoration(
-                      border: const OutlineInputBorder(),
-                      hintText: '-30% на джинсы',
-                      hintStyle: TextStyle(color: Colors.grey[400], fontStyle: FontStyle.italic),
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  const Text('Подробное описание акции', style: TextStyle(fontWeight: FontWeight.w600)),
-                  const SizedBox(height: 8),
-                  TextFormField(
-                    controller: _discountController,
-                    maxLines: 3,
-                    decoration: InputDecoration(
-                      border: const OutlineInputBorder(),
-                      hintText: 'Например: "Скидка 30% на джинсы из прошлой коллекции до 31 июля"',
-                      hintStyle: TextStyle(color: Colors.grey[400], fontStyle: FontStyle.italic),
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  const Text('🖼️ Фото для подробной информации', style: TextStyle(fontWeight: FontWeight.w600)),
-                  const SizedBox(height: 4),
-                  const Text('Это изображение будет показано в полном информационном окне.',
-                      style: TextStyle(fontSize: 12, color: Colors.grey)),
-                  const SizedBox(height: 8),
-                  TextFormField(
-                    controller: _infoImageUrlController,
-                    decoration: InputDecoration(
-                      border: const OutlineInputBorder(),
-                      hintText: 'https://... (ссылка на красивое фото магазина)',
-                      hintStyle: TextStyle(color: Colors.grey[400], fontStyle: FontStyle.italic),
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      SizedBox(
-                        width: 130,
-                        height: 100,
-                        child: ClipRRect(
-                          borderRadius: BorderRadius.circular(12),
-                          child: _infoImageUrlController.text.isNotEmpty
-                              ? Transform(
-                                  transform: _infoImageTransformController.value,
-                                  child: Image.network(_infoImageUrlController.text, fit: BoxFit.cover,
-                                      errorBuilder: (_, __, ___) => Container(color: Colors.grey[200], child: const Icon(Icons.broken_image))))
-                              : Container(color: Colors.grey[200], child: const Icon(Icons.image)),
-                        ),
-                      ),
-                      const SizedBox(width: 16),
-                      ElevatedButton.icon(
-                        onPressed: () => _openImageEditor(
-                          title: 'Редактировать фото для информации',
-                          controller: _infoImageTransformController,
-                          imageUrl: _infoImageUrlController.text,
-                        ),
-                        icon: const Icon(Icons.edit),
-                        label: const Text('Редактировать'),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-          ),
-
-          // Координаты на карте
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text('📍 Позиция на карте ТЦ', style: TextStyle(fontWeight: FontWeight.w600)),
-                  const SizedBox(height: 8),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: TextFormField(
-                          controller: _mapXController,
-                          decoration: InputDecoration(
-                            border: const OutlineInputBorder(),
-                            labelText: 'X (0.0 - 1.0)',
-                            hintText: '0.5',
-                            hintStyle: TextStyle(color: Colors.grey[400], fontStyle: FontStyle.italic),
-                          ),
-                          keyboardType: TextInputType.numberWithOptions(decimal: true),
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: TextFormField(
-                          controller: _mapYController,
-                          decoration: InputDecoration(
-                            border: const OutlineInputBorder(),
-                            labelText: 'Y (0.0 - 1.0)',
-                            hintText: '0.5',
-                            hintStyle: TextStyle(color: Colors.grey[400], fontStyle: FontStyle.italic),
-                          ),
-                          keyboardType: TextInputType.numberWithOptions(decimal: true),
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: TextFormField(
-                          controller: _mapWidthController,
-                          decoration: InputDecoration(
-                            border: const OutlineInputBorder(),
-                            labelText: 'Ширина на карте (0..1)',
-                            hintText: '0.1',
-                            hintStyle: TextStyle(color: Colors.grey[400], fontStyle: FontStyle.italic),
-                          ),
-                          keyboardType: TextInputType.numberWithOptions(decimal: true),
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: TextFormField(
-                          controller: _mapHeightController,
-                          decoration: InputDecoration(
-                            border: const OutlineInputBorder(),
-                            labelText: 'Высота на карте (0..1)',
-                            hintText: '0.1',
-                            hintStyle: TextStyle(color: Colors.grey[400], fontStyle: FontStyle.italic),
-                          ),
-                          keyboardType: TextInputType.numberWithOptions(decimal: true),
-                        ),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-          ),
-
-          // Кнопка сохранения
-          Padding(
-            padding: const EdgeInsets.symmetric(vertical: 16),
-            child: Center(
-              child: ElevatedButton.icon(
+              ElevatedButton.icon(
                 onPressed: _saveAllChanges,
                 icon: const Icon(Icons.save),
-                label: const Text('Сохранить изменения'),
+                label: const Text('Сохранить'),
                 style: ElevatedButton.styleFrom(
                   backgroundColor: const Color(0xFF6C63FF),
                   foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 14),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                 ),
               ),
+            ],
+          ),
+          const SizedBox(height: 24),
+
+          // Карточка быстрой статистики
+          _buildInfoCard(
+            icon: Icons.trending_up,
+            title: 'Быстрая статистика',
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceAround,
+              children: [
+                _buildStatItem('Активации сегодня', _todayActivations.toString()),
+                _buildStatItem('Новые клиенты за неделю', _newClientsWeek.toString()),
+              ],
             ),
           ),
 
-          // Приоритет, ближайшая акция, статистика, уведомления, как это работает – без изменений
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text('Приоритет', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-                  const SizedBox(height: 8),
-                  Row(
+          const SizedBox(height: 16),
+
+          // Быстрые действия
+          _buildQuickActions(),
+
+          const SizedBox(height: 24),
+
+          // Настройки магазина в раскрывающихся карточках
+          _buildSettingsCard(
+            title: 'Логотип и информация',
+            icon: Icons.edit,
+            child: Column(
+              children: [
+                _buildLogoEditor(),
+                const SizedBox(height: 16),
+                _buildInfoEditor(),
+              ],
+            ),
+          ),
+
+          const SizedBox(height: 16),
+
+          _buildSettingsCard(
+            title: 'Позиция на карте',
+            icon: Icons.location_on,
+            child: _buildMapPositionEditor(),
+          ),
+
+          const SizedBox(height: 16),
+
+          _buildInfoCard(
+            icon: Icons.calendar_today,
+            title: 'Ближайшая акция',
+            child: _nearestPromotion == null
+                ? const Text('Нет активных акций.', style: TextStyle(color: Colors.grey))
+                : Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Chip(label: Text('$priority'), backgroundColor: Colors.blue.shade100),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Text(
-                          'Чем выше приоритет, тем чаще ваши акции предлагаются пользователям.',
-                          style: TextStyle(fontSize: 12, color: Colors.grey[700]),
-                        ),
-                      ),
+                      Text(_nearestPromotion!['title'], style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                      const SizedBox(height: 4),
+                      Text('${_nearestPromotion!['discount']} — с ${DateFormat('dd.MM.yyyy').format(_nearestPromotion!['startDate'])} по ${DateFormat('dd.MM.yyyy').format(_nearestPromotion!['endDate'])}'),
                     ],
                   ),
-                  const SizedBox(height: 12),
-                  ElevatedButton.icon(
-                    onPressed: _onUpgradePriority,
-                    icon: const Icon(Icons.trending_up),
-                    label: const Text('Повысить приоритет'),
-                    style: ElevatedButton.styleFrom(backgroundColor: Colors.orange),
-                  ),
-                ],
-              ),
+            trailing: TextButton(
+              onPressed: _goToCalendar,
+              child: const Text('Все акции'),
             ),
           ),
 
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text('Ближайшая акция', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-                  const SizedBox(height: 8),
-                  if (_nearestPromotion == null)
-                    Text('Нет активных акций.', style: TextStyle(color: Colors.grey[600]))
-                  else
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(_nearestPromotion!['title'], style: const TextStyle(fontSize: 16)),
-                        const SizedBox(height: 4),
-                        Text('${_nearestPromotion!['discount']} — с ${DateFormat('dd.MM.yyyy').format(_nearestPromotion!['startDate'])} по ${DateFormat('dd.MM.yyyy').format(_nearestPromotion!['endDate'])}',
-                            style: const TextStyle(fontSize: 12)),
-                      ],
-                    ),
-                  const SizedBox(height: 12),
-                  OutlinedButton(
-                    onPressed: _goToCalendar,
-                    child: const Text('Все акции'),
-                  ),
-                ],
-              ),
-            ),
-          ),
+          const SizedBox(height: 16),
 
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text('Статистика', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-                  const SizedBox(height: 8),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          _buildInfoCard(
+            icon: Icons.notifications,
+            title: 'Последнее уведомление',
+            child: _lastNotification == null
+                ? const Text('Нет уведомлений.', style: TextStyle(color: Colors.grey))
+                : Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Column(
-                        children: [
-                          Text('$_todayActivations', style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
-                          const Text('активаций сегодня', style: TextStyle(fontSize: 12)),
-                        ],
-                      ),
-                      Column(
-                        children: [
-                          Text('$_newClientsWeek', style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
-                          const Text('новых клиентов за неделю', style: TextStyle(fontSize: 12)),
-                        ],
-                      ),
+                      Text(_lastNotification!['title'], style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
+                      const SizedBox(height: 4),
+                      Text(_lastNotification!['body'], maxLines: 2, overflow: TextOverflow.ellipsis),
+                      const SizedBox(height: 4),
+                      Text(DateFormat('dd.MM.yyyy HH:mm').format(_lastNotification!['timestamp']),
+                          style: const TextStyle(fontSize: 10, color: Colors.grey)),
                     ],
                   ),
-                  const SizedBox(height: 12),
-                  OutlinedButton(
-                    onPressed: _goToStats,
-                    child: const Text('Подробнее'),
-                  ),
-                ],
-              ),
+            trailing: TextButton(
+              onPressed: _goToNotifications,
+              child: const Text('Все уведомления'),
             ),
           ),
 
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text('Последнее уведомление', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-                  const SizedBox(height: 8),
-                  if (_lastNotification == null)
-                    Text('Нет уведомлений.', style: TextStyle(color: Colors.grey[600]))
-                  else
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(_lastNotification!['title'], style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
-                        const SizedBox(height: 4),
-                        Text(_lastNotification!['body'], style: const TextStyle(fontSize: 12)),
-                        const SizedBox(height: 4),
-                        Text(DateFormat('dd.MM.yyyy HH:mm').format(_lastNotification!['timestamp']),
-                            style: const TextStyle(fontSize: 10, color: Colors.grey)),
-                      ],
-                    ),
-                  const SizedBox(height: 12),
-                  OutlinedButton(
-                    onPressed: _goToNotifications,
-                    child: const Text('Все уведомления'),
-                  ),
-                ],
-              ),
-            ),
-          ),
+          const SizedBox(height: 16),
 
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text('Как это работает?', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-                  const SizedBox(height: 8),
-                  const Text(
-                    '1. Пользователь проходит путь из 5 магазинов, сканируя QR-коды.\n'
-                    '2. Каждая активация вашей акции приносит вам клиента.\n'
-                    '3. Вы можете планировать акции, управлять баннерами и отправлять уведомления.\n'
-                    '4. Чем выше приоритет, тем чаще ваша акция предлагается.',
-                    style: TextStyle(fontSize: 12),
-                  ),
-                ],
-              ),
+          _buildInfoCard(
+            icon: Icons.star,
+            title: 'Приоритет',
+            child: Row(
+              children: [
+                Chip(label: Text('$priority'), backgroundColor: Colors.blue.shade100),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text('Чем выше приоритет, тем чаще ваши акции предлагаются пользователям.',
+                      style: TextStyle(fontSize: 12, color: Colors.grey[700])),
+                ),
+              ],
+            ),
+            trailing: ElevatedButton.icon(
+              onPressed: _onUpgradePriority,
+              icon: const Icon(Icons.trending_up),
+              label: const Text('Повысить'),
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.orange, foregroundColor: Colors.white),
             ),
           ),
         ],
       ),
     );
   }
+
+  // ========== Вспомогательные виджеты ==========
+
+  Widget _buildInfoCard({
+    required IconData icon,
+    required String title,
+    required Widget child,
+    Widget? trailing,
+  }) {
+    return Card(
+      elevation: 2,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(icon, size: 20, color: const Color(0xFF6C63FF)),
+                const SizedBox(width: 8),
+                Expanded(child: Text(title, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold))),
+                if (trailing != null) trailing,
+              ],
+            ),
+            const SizedBox(height: 12),
+            child,
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildStatItem(String label, String value) {
+    return Column(
+      children: [
+        Text(value, style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
+        Text(label, style: const TextStyle(fontSize: 12, color: Colors.grey)),
+      ],
+    );
+  }
+
+  Widget _buildQuickActions() {
+    final actions = [
+      {'icon': Icons.calendar_month, 'title': 'Акции', 'onTap': _goToCalendar},
+      {'icon': Icons.bar_chart, 'title': 'Статистика', 'onTap': _goToStats},
+      {'icon': Icons.notifications, 'title': 'Уведомления', 'onTap': _goToNotifications},
+    ];
+
+    return Row(
+      children: actions.map((action) {
+        return Expanded(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 4),
+            child: Card(
+              elevation: 2,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+              child: InkWell(
+                onTap: action['onTap'] as VoidCallback,
+                borderRadius: BorderRadius.circular(16),
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Column(
+                    children: [
+                      Icon(action['icon'] as IconData, size: 28, color: const Color(0xFF6C63FF)),
+                      const SizedBox(height: 8),
+                      Text(action['title'] as String, textAlign: TextAlign.center),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+      }).toList(),
+    );
+  }
+
+  Widget _buildSettingsCard({
+    required String title,
+    required IconData icon,
+    required Widget child,
+  }) {
+    return Card(
+      elevation: 2,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      child: ExpansionTile(
+        leading: Icon(icon, color: const Color(0xFF6C63FF)),
+        title: Text(title, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+        children: [
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: child,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildLogoEditor() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text('Логотип для главного экрана', style: TextStyle(fontWeight: FontWeight.bold)),
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            SizedBox(
+              width: 100,
+              height: 80,
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(8),
+                child: _imageUrlController.text.isNotEmpty
+                    ? Transform(
+                        transform: _logoTransformController.value,
+                        child: Image.network(_imageUrlController.text, fit: BoxFit.cover,
+                            errorBuilder: (_, __, ___) => Container(color: Colors.grey[200], child: const Icon(Icons.broken_image))))
+                    : Container(color: Colors.grey[200], child: const Icon(Icons.image)),
+              ),
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: TextFormField(
+                controller: _imageUrlController,
+                decoration: const InputDecoration(labelText: 'URL изображения', border: OutlineInputBorder()),
+              ),
+            ),
+            IconButton(
+              icon: const Icon(Icons.edit),
+              onPressed: () => _openImageEditor(
+                title: 'Редактировать логотип',
+                controller: _logoTransformController,
+                imageUrl: _imageUrlController.text,
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _buildInfoEditor() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text('Информация о магазине', style: TextStyle(fontWeight: FontWeight.bold)),
+        const SizedBox(height: 8),
+        TextFormField(controller: _nameController, decoration: const InputDecoration(labelText: 'Название магазина')),
+        const SizedBox(height: 12),
+        TextFormField(controller: _descriptionController, maxLines: 3, decoration: const InputDecoration(labelText: 'Описание')),
+        const SizedBox(height: 12),
+        TextFormField(controller: _shortDiscountController, decoration: const InputDecoration(labelText: 'Краткая скидка (для карточки)')),
+        const SizedBox(height: 12),
+        TextFormField(controller: _discountController, maxLines: 3, decoration: const InputDecoration(labelText: 'Подробное описание акции')),
+        const SizedBox(height: 12),
+        const Text('Фото для подробной информации', style: TextStyle(fontWeight: FontWeight.bold)),
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            SizedBox(
+              width: 100,
+              height: 80,
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(8),
+                child: _infoImageUrlController.text.isNotEmpty
+                    ? Transform(
+                        transform: _infoImageTransformController.value,
+                        child: Image.network(_infoImageUrlController.text, fit: BoxFit.cover,
+                            errorBuilder: (_, __, ___) => Container(color: Colors.grey[200], child: const Icon(Icons.broken_image))))
+                    : Container(color: Colors.grey[200], child: const Icon(Icons.image)),
+              ),
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: TextFormField(
+                controller: _infoImageUrlController,
+                decoration: const InputDecoration(labelText: 'URL фото', border: OutlineInputBorder()),
+              ),
+            ),
+            IconButton(
+              icon: const Icon(Icons.edit),
+              onPressed: () => _openImageEditor(
+                title: 'Редактировать фото',
+                controller: _infoImageTransformController,
+                imageUrl: _infoImageUrlController.text,
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _buildMapPositionEditor() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: TextFormField(
+                controller: _mapXController,
+                decoration: const InputDecoration(labelText: 'X (0.0 - 1.0)', border: OutlineInputBorder()),
+                keyboardType: TextInputType.numberWithOptions(decimal: true),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: TextFormField(
+                controller: _mapYController,
+                decoration: const InputDecoration(labelText: 'Y (0.0 - 1.0)', border: OutlineInputBorder()),
+                keyboardType: TextInputType.numberWithOptions(decimal: true),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        Row(
+          children: [
+            Expanded(
+              child: TextFormField(
+                controller: _mapWidthController,
+                decoration: const InputDecoration(labelText: 'Ширина', border: OutlineInputBorder()),
+                keyboardType: TextInputType.numberWithOptions(decimal: true),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: TextFormField(
+                controller: _mapHeightController,
+                decoration: const InputDecoration(labelText: 'Высота', border: OutlineInputBorder()),
+                keyboardType: TextInputType.numberWithOptions(decimal: true),
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
 }
 
 // ======================================================================
-// ВСПОМОГАТЕЛЬНЫЕ КЛАССЫ ДЛЯ РЕДАКТОРА
+// ВСПОМОГАТЕЛЬНЫЕ КЛАССЫ ДЛЯ РЕДАКТОРА ИЗОБРАЖЕНИЙ
 // ======================================================================
 
 class _ImageEditorDialog extends StatefulWidget {
@@ -773,7 +735,6 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
   double _scale = 1.0;
   late double _frameAspect = widget.iconWidth / widget.iconHeight;
   Size _frameScreenSize = Size.zero;
-
   Offset _lastFocal = Offset.zero;
   double _lastScale = 1.0;
 
@@ -887,7 +848,6 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
           final newScale = (_lastScale * details.scale).clamp(0.05, 10.0);
           final delta = details.localFocalPoint - _lastFocal;
           _lastFocal = details.localFocalPoint;
-
           _offset = Offset(
             _offset.dx - delta.dx / _scale,
             _offset.dy - delta.dy / _scale,
