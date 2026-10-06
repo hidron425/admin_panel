@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:supabase_flutter/supabase_flutter.dart' as supa;
 import 'package:admin_panel/utils/audit.dart';
-import 'package:admin_panel/utils/app_state.dart';   // 🆕 глобальное состояние
+import 'package:admin_panel/utils/app_state.dart';
 
 class CmsScreen extends StatefulWidget {
   const CmsScreen({super.key});
@@ -11,13 +11,13 @@ class CmsScreen extends StatefulWidget {
 }
 
 class _CmsScreenState extends State<CmsScreen> {
-  final _firestore = FirebaseFirestore.instance;
+  supa.SupabaseClient get _sb => supa.Supabase.instance.client;
+
   final _keyController = TextEditingController();
   final _textController = TextEditingController();
   String? _editingDocId;
-  String? _selectedMallId;   // 🆕 текущий выбранный ТЦ
+  String? _selectedMallId;
 
-  // Предопределённые ключи для удобства
   final List<String> _commonKeys = [
     'home_welcome',
     'quest_rules',
@@ -44,7 +44,6 @@ class _CmsScreenState extends State<CmsScreen> {
     if (_selectedMallId != AppState.selectedMallId.value) {
       setState(() {
         _selectedMallId = AppState.selectedMallId.value;
-        // Сбрасываем текущий редактируемый документ, т.к. контент может отличаться
         _editingDocId = null;
         _textController.clear();
       });
@@ -52,26 +51,37 @@ class _CmsScreenState extends State<CmsScreen> {
   }
 
   Future<void> _loadContent(String key) async {
-    Query query = _firestore.collection('content').where('key', isEqualTo: key);
-    if (_selectedMallId != null) {
-      query = query.where('mallId', isEqualTo: _selectedMallId);
-    } else {
-      // Если выбран "Все ТЦ", ищем контент без mallId (общий)
-      query = query.where('mallId', isNull: true);
-    }
-    final snap = await query.limit(1).get();
+    try {
+      dynamic query = _sb.from('content').select().eq('key', key);
 
-    if (snap.docs.isNotEmpty) {
-      final doc = snap.docs.first;
-      _editingDocId = doc.id;
-      _keyController.text = key;
-      _textController.text = (doc.data() as Map<String, dynamic>)['text'] ?? '';
-    } else {
-      _editingDocId = null;
-      _keyController.text = key;
-      _textController.clear();
+      if (_selectedMallId != null) {
+        query = query.eq('mall_id', _selectedMallId!);
+      } else {
+        query = query.isFilter('mall_id', null);
+      }
+
+      final data = await query.limit(1).maybeSingle();
+
+      if (data != null) {
+        _editingDocId = data['id'].toString();
+        _keyController.text = key;
+        _textController.text = (data['text'] as String?) ?? '';
+      } else {
+        _editingDocId = null;
+        _keyController.text = key;
+        _textController.clear();
+      }
+      if (mounted) setState(() {});
+    } catch (e) {
+      debugPrint('❌ _loadContent: $e');
+      if (mounted) {
+        setState(() {
+          _editingDocId = null;
+          _keyController.text = key;
+          _textController.clear();
+        });
+      }
     }
-    setState(() {});
   }
 
   Future<void> _saveContent() async {
@@ -79,24 +89,48 @@ class _CmsScreenState extends State<CmsScreen> {
     final text = _textController.text.trim();
     if (key.isEmpty) return;
 
-    final data = {
+    final data = <String, dynamic>{
       'key': key,
       'text': text,
-      // 🆕 Сохраняем привязку к ТЦ (если выбран конкретный ТЦ)
-      'mallId': _selectedMallId,
-      'updatedAt': FieldValue.serverTimestamp(),
+      'mall_id': _selectedMallId,
+      'updated_at': DateTime.now().toIso8601String(),
     };
 
-    if (_editingDocId != null) {
-      await _firestore.collection('content').doc(_editingDocId).update(data);
-      AuditLogger.log(action: 'update', collection: 'content', docId: _editingDocId!, changes: data);
-    } else {
-      final ref = await _firestore.collection('content').add(data);
-      _editingDocId = ref.id;
-      AuditLogger.log(action: 'create', collection: 'content', docId: ref.id, changes: data);
-    }
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Сохранено')));
+    try {
+      if (_editingDocId != null) {
+        await _sb.from('content').update(data).eq('id', _editingDocId!);
+        AuditLogger.log(
+          action: 'update',
+          collection: 'content',
+          docId: _editingDocId!,
+          changes: data,
+        );
+      } else {
+        final result = await _sb
+            .from('content')
+            .insert(data)
+            .select('id')
+            .single();
+        _editingDocId = result['id'].toString();
+        AuditLogger.log(
+          action: 'create',
+          collection: 'content',
+          docId: _editingDocId!,
+          changes: data,
+        );
+      }
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Сохранено')),
+        );
+      }
+    } catch (e) {
+      debugPrint('❌ _saveContent: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Ошибка: $e')),
+        );
+      }
     }
   }
 
@@ -104,11 +138,12 @@ class _CmsScreenState extends State<CmsScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text(_selectedMallId == null ? 'Управление контентом (Все ТЦ)' : 'Управление контентом (${_selectedMallId})'),
+        title: Text(_selectedMallId == null
+            ? 'Управление контентом (Все ТЦ)'
+            : 'Управление контентом (${_selectedMallId})'),
       ),
       body: Row(
         children: [
-          // Список ключей
           SizedBox(
             width: 220,
             child: ListView(
@@ -121,7 +156,6 @@ class _CmsScreenState extends State<CmsScreen> {
             ),
           ),
           const VerticalDivider(width: 1),
-          // Редактор
           Expanded(
             child: Padding(
               padding: const EdgeInsets.all(16),

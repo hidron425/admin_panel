@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:supabase_flutter/supabase_flutter.dart' as supa;
 import 'package:admin_panel/utils/audit.dart';
-import 'package:admin_panel/utils/app_state.dart';   // 🆕 глобальное состояние
+import 'package:admin_panel/utils/app_state.dart';
 
 class DailyTasksManagerScreen extends StatefulWidget {
   const DailyTasksManagerScreen({super.key});
@@ -11,14 +11,18 @@ class DailyTasksManagerScreen extends StatefulWidget {
 }
 
 class _DailyTasksManagerScreenState extends State<DailyTasksManagerScreen> {
-  final _firestore = FirebaseFirestore.instance;
-  String? _selectedMallId;   // 🆕 текущий выбранный ТЦ
+  supa.SupabaseClient get _sb => supa.Supabase.instance.client;
+
+  String? _selectedMallId;
+  List<Map<String, dynamic>> _tasks = [];
+  bool _isLoading = true;
 
   @override
   void initState() {
     super.initState();
     _selectedMallId = AppState.selectedMallId.value;
     AppState.selectedMallId.addListener(_onMallChanged);
+    _loadTasks();
   }
 
   @override
@@ -30,16 +34,28 @@ class _DailyTasksManagerScreenState extends State<DailyTasksManagerScreen> {
   void _onMallChanged() {
     if (_selectedMallId != AppState.selectedMallId.value) {
       setState(() => _selectedMallId = AppState.selectedMallId.value);
+      _loadTasks();
     }
   }
 
-  // 🆕 Метод для получения потока с фильтром по ТЦ
-  Stream<QuerySnapshot> _getTasksStream() {
-    Query query = _firestore.collection('daily_tasks');
-    if (_selectedMallId != null) {
-      query = query.where('mallId', isEqualTo: _selectedMallId);
+  Future<void> _loadTasks() async {
+    setState(() => _isLoading = true);
+    try {
+      var query = _sb.from('daily_tasks').select();
+      if (_selectedMallId != null) {
+        query = query.eq('mall_id', _selectedMallId!);
+      }
+      final data = await query.order('created_at', ascending: false);
+      if (mounted) {
+        setState(() {
+          _tasks = (data as List).map((j) => Map<String, dynamic>.from(j)).toList();
+          _isLoading = false;
+        });
+      }
+    } catch (e) {
+      debugPrint('❌ _loadTasks: $e');
+      if (mounted) setState(() => _isLoading = false);
     }
-    return query.snapshots();
   }
 
   Future<void> _addOrEditTask({String? taskId, Map<String, dynamic>? existing}) async {
@@ -50,10 +66,7 @@ class _DailyTasksManagerScreenState extends State<DailyTasksManagerScreen> {
     final descCtrl = TextEditingController(text: existing?['description'] ?? '');
     final rewardCtrl = TextEditingController(text: existing?['reward']?.toString() ?? '50');
     final targetCtrl = TextEditingController(text: existing?['target']?.toString() ?? '1');
-    String? category;
-    if (existing?['category'] != null) {
-      category = existing!['category'] as String;
-    }
+    String? category = existing?['category'] as String?;
 
     await showDialog(
       context: context,
@@ -69,7 +82,7 @@ class _DailyTasksManagerScreenState extends State<DailyTasksManagerScreen> {
                   DropdownButtonFormField<String>(
                     value: selectedType,
                     decoration: const InputDecoration(labelText: 'Тип задания'),
-                    items: [
+                    items: const [
                       DropdownMenuItem(value: 'complete_quest', child: Text('Завершить квест')),
                       DropdownMenuItem(value: 'visit_category', child: Text('Посетить категорию')),
                       DropdownMenuItem(value: 'invite_friend', child: Text('Пригласить друга')),
@@ -109,24 +122,29 @@ class _DailyTasksManagerScreenState extends State<DailyTasksManagerScreen> {
             TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Отмена')),
             ElevatedButton(
               onPressed: () async {
-                final data = {
+                final data = <String, dynamic>{
                   'type': selectedType,
                   'description': descCtrl.text.trim(),
                   'reward': int.tryParse(rewardCtrl.text) ?? 50,
                   'target': int.tryParse(targetCtrl.text) ?? 1,
                   'category': selectedType == 'visit_category' ? category : null,
                   'active': true,
-                  // 🆕 Привязка к выбранному ТЦ (если он выбран)
-                  'mallId': _selectedMallId,
+                  'mall_id': _selectedMallId,
                 };
-                if (isEdit) {
-                  await _firestore.collection('daily_tasks').doc(taskId).update(data);
-                  AuditLogger.log(action: 'update', collection: 'daily_tasks', docId: taskId, changes: data);
-                } else {
-                  final ref = await _firestore.collection('daily_tasks').add(data);
-                  AuditLogger.log(action: 'create', collection: 'daily_tasks', docId: ref.id, changes: data);
+                try {
+                  if (isEdit) {
+                    await _sb.from('daily_tasks').update(data).eq('id', taskId);
+                    AuditLogger.log(action: 'update', collection: 'daily_tasks', docId: taskId, changes: data);
+                  } else {
+                    data['created_at'] = DateTime.now().toIso8601String();
+                    final result = await _sb.from('daily_tasks').insert(data).select('id').single();
+                    AuditLogger.log(action: 'create', collection: 'daily_tasks', docId: result['id'].toString(), changes: data);
+                  }
+                  if (mounted) Navigator.pop(ctx);
+                  _loadTasks();
+                } catch (e) {
+                  debugPrint('❌ save task: $e');
                 }
-                Navigator.pop(ctx);
               },
               child: const Text('Сохранить'),
             ),
@@ -148,8 +166,13 @@ class _DailyTasksManagerScreenState extends State<DailyTasksManagerScreen> {
       ),
     );
     if (confirm == true) {
-      await _firestore.collection('daily_tasks').doc(id).delete();
-      AuditLogger.log(action: 'delete', collection: 'daily_tasks', docId: id);
+      try {
+        await _sb.from('daily_tasks').delete().eq('id', id);
+        AuditLogger.log(action: 'delete', collection: 'daily_tasks', docId: id);
+        _loadTasks();
+      } catch (e) {
+        debugPrint('❌ delete task: $e');
+      }
     }
   }
 
@@ -161,51 +184,42 @@ class _DailyTasksManagerScreenState extends State<DailyTasksManagerScreen> {
             ? 'Ежедневные задания (Все ТЦ)'
             : 'Ежедневные задания (${_selectedMallId})'),
         actions: [
-          IconButton(
-            icon: const Icon(Icons.add),
-            onPressed: () => _addOrEditTask(),
-          ),
+          IconButton(icon: const Icon(Icons.add), onPressed: () => _addOrEditTask()),
         ],
       ),
-      body: StreamBuilder<QuerySnapshot>(
-        stream: _getTasksStream(),
-        builder: (context, snapshot) {
-          if (snapshot.hasError) return Center(child: Text('Ошибка: ${snapshot.error}'));
-          if (snapshot.connectionState == ConnectionState.waiting) return const Center(child: CircularProgressIndicator());
-          final docs = snapshot.data!.docs;
-          if (docs.isEmpty) return const Center(child: Text('Нет заданий'));
-
-          return ListView.builder(
-            itemCount: docs.length,
-            itemBuilder: (context, index) {
-              final data = docs[index].data() as Map<String, dynamic>;
-              final id = docs[index].id;
-              return Card(
-                margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-                child: ListTile(
-                  title: Text(data['description'] ?? ''),
-                  subtitle: Text(
-                    'Тип: ${data['type']} | Награда: ${data['reward']} монет | Цель: ${data['target']}',
-                  ),
-                  trailing: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      IconButton(
-                        icon: const Icon(Icons.edit),
-                        onPressed: () => _addOrEditTask(taskId: id, existing: data),
+      body: _isLoading
+          ? const Center(child: CircularProgressIndicator())
+          : _tasks.isEmpty
+              ? const Center(child: Text('Нет заданий'))
+              : ListView.builder(
+                  itemCount: _tasks.length,
+                  itemBuilder: (context, index) {
+                    final data = _tasks[index];
+                    final id = data['id'].toString();
+                    return Card(
+                      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+                      child: ListTile(
+                        title: Text(data['description'] ?? ''),
+                        subtitle: Text(
+                          'Тип: ${data['type']} | Награда: ${data['reward']} монет | Цель: ${data['target']}',
+                        ),
+                        trailing: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            IconButton(
+                              icon: const Icon(Icons.edit),
+                              onPressed: () => _addOrEditTask(taskId: id, existing: data),
+                            ),
+                            IconButton(
+                              icon: const Icon(Icons.delete, color: Colors.red),
+                              onPressed: () => _deleteTask(id),
+                            ),
+                          ],
+                        ),
                       ),
-                      IconButton(
-                        icon: const Icon(Icons.delete, color: Colors.red),
-                        onPressed: () => _deleteTask(id),
-                      ),
-                    ],
-                  ),
+                    );
+                  },
                 ),
-              );
-            },
-          );
-        },
-      ),
     );
   }
 }

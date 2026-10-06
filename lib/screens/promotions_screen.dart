@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart';
-import 'package:admin_panel/utils/audit.dart';   // 🆕 сервис аудита
+import 'package:supabase_flutter/supabase_flutter.dart' as supa;
+import 'package:admin_panel/utils/audit.dart';
 
 class PromotionsScreen extends StatefulWidget {
   const PromotionsScreen({Key? key}) : super(key: key);
@@ -11,7 +10,8 @@ class PromotionsScreen extends StatefulWidget {
 }
 
 class _PromotionsScreenState extends State<PromotionsScreen> {
-  final _firestore = FirebaseFirestore.instance;
+  supa.SupabaseClient get _sb => supa.Supabase.instance.client;
+
   String? _shopId;
   List<Map<String, dynamic>> _promotions = [];
   bool _loading = true;
@@ -32,65 +32,69 @@ class _PromotionsScreenState extends State<PromotionsScreen> {
   }
 
   Future<void> _getShopId() async {
-    final user = FirebaseAuth.instance.currentUser;
-    if (user != null && user.email != null) {
-      final doc = await _firestore.collection('users').doc(user.email!).get();
-      if (mounted) {
-        setState(() {
-          _shopId = doc.data()?['storeId'] as String?;
-        });
+    try {
+      final email = _sb.auth.currentUser?.email;
+      if (email != null) {
+        final data = await _sb
+            .from('user_metadata')
+            .select('store_id')
+            .eq('email', email)
+            .maybeSingle();
+        if (mounted) {
+          setState(() => _shopId = data?['store_id'] as String?);
+        }
+        if (_shopId != null) await _loadPromotions();
       }
-      if (_shopId != null) {
-        await _loadPromotions();
-      }
-      if (mounted) {
-        setState(() => _loading = false);
-      }
-    } else {
-      if (mounted) setState(() => _loading = false);
+    } catch (e) {
+      debugPrint('❌ _getShopId: $e');
     }
+    if (mounted) setState(() => _loading = false);
   }
 
   Future<void> _loadPromotions() async {
     if (_shopId == null) return;
-    final snapshot = await _firestore
-        .collection('store_promotions')
-        .where('shopId', isEqualTo: _shopId)
-        .get();
+    try {
+      final data = await _sb
+          .from('store_promotions')
+          .select()
+          .eq('shop_id', _shopId!);
 
-    final List<Map<String, dynamic>> list = [];
-    final Map<DateTime, List<Map<String, dynamic>>> events = {};
+      final List<Map<String, dynamic>> list = [];
+      final Map<DateTime, List<Map<String, dynamic>>> events = {};
 
-    for (var doc in snapshot.docs) {
-      final data = doc.data();
-      final startDate = (data['startDate'] as Timestamp).toDate();
-      final endDate = (data['endDate'] as Timestamp).toDate();
+      for (final row in data as List) {
+        final m = Map<String, dynamic>.from(row);
+        final startDate = DateTime.tryParse(m['start_date']?.toString() ?? '') ?? DateTime.now();
+        final endDate = DateTime.tryParse(m['end_date']?.toString() ?? '') ?? DateTime.now();
 
-      final item = {
-        'id': doc.id,
-        'title': data['title'] ?? '',
-        'description': data['description'] ?? '',
-        'discount': data['discount'] ?? '',
-        'startDate': startDate,
-        'endDate': endDate,
-        'isActive': data['isActive'] ?? false,
-      };
-      list.add(item);
+        final item = {
+          'id': m['firestore_id']?.toString() ?? m['id'].toString(),
+          'title': m['title'] ?? '',
+          'description': m['description'] ?? '',
+          'discount': m['discount'] ?? '',
+          'startDate': startDate,
+          'endDate': endDate,
+          'isActive': m['is_active'] ?? false,
+        };
+        list.add(item);
 
-      DateTime day = DateTime(startDate.year, startDate.month, startDate.day);
-      final endDay = DateTime(endDate.year, endDate.month, endDate.day);
-      while (day.isBefore(endDay) || day.isAtSameMomentAs(endDay)) {
-        final dateKey = DateTime(day.year, day.month, day.day);
-        events.putIfAbsent(dateKey, () => []).add(item);
-        day = day.add(const Duration(days: 1));
+        DateTime day = DateTime(startDate.year, startDate.month, startDate.day);
+        final endDay = DateTime(endDate.year, endDate.month, endDate.day);
+        while (day.isBefore(endDay) || day.isAtSameMomentAs(endDay)) {
+          final dateKey = DateTime(day.year, day.month, day.day);
+          events.putIfAbsent(dateKey, () => []).add(item);
+          day = day.add(const Duration(days: 1));
+        }
       }
-    }
 
-    if (mounted) {
-      setState(() {
-        _promotions = list;
-        _events = events;
-      });
+      if (mounted) {
+        setState(() {
+          _promotions = list;
+          _events = events;
+        });
+      }
+    } catch (e) {
+      debugPrint('❌ _loadPromotions: $e');
     }
   }
 
@@ -160,35 +164,43 @@ class _PromotionsScreenState extends State<PromotionsScreen> {
               ElevatedButton(
                 onPressed: () async {
                   if (titleCtrl.text.trim().isEmpty) return;
-                  final data = {
-                    'shopId': _shopId,
+                  final data = <String, dynamic>{
+                    'shop_id': _shopId,
                     'title': titleCtrl.text.trim(),
                     'description': descCtrl.text.trim(),
                     'discount': discountCtrl.text.trim(),
-                    'startDate': Timestamp.fromDate(startDate),
-                    'endDate': Timestamp.fromDate(endDate),
-                    'isActive': isActive,
+                    'start_date': startDate.toIso8601String(),
+                    'end_date': endDate.toIso8601String(),
+                    'is_active': isActive,
                   };
-                  String action;
-                  String docId;
-                  if (isEdit) {
-                    await _firestore.collection('store_promotions').doc(existing['id']).update(data);
-                    action = 'update';
-                    docId = existing['id'];
-                  } else {
-                    final docRef = await _firestore.collection('store_promotions').add(data);
-                    action = 'create';
-                    docId = docRef.id;
+                  try {
+                    if (isEdit) {
+                      await _sb
+                          .from('store_promotions')
+                          .update(data)
+                          .eq('firestore_id', existing['id']);
+                      AuditLogger.log(
+                        action: 'update',
+                        collection: 'store_promotions',
+                        docId: existing['id'].toString(),
+                        changes: data,
+                      );
+                    } else {
+                      data['firestore_id'] = DateTime.now().millisecondsSinceEpoch.toString();
+                      data['created_at'] = DateTime.now().toIso8601String();
+                      await _sb.from('store_promotions').insert(data);
+                      AuditLogger.log(
+                        action: 'create',
+                        collection: 'store_promotions',
+                        docId: data['firestore_id'],
+                        changes: data,
+                      );
+                    }
+                    if (mounted) Navigator.pop(context);
+                    await _loadPromotions();
+                  } catch (e) {
+                    debugPrint('❌ save promotion: $e');
                   }
-                  // 🆕 Аудит создания/обновления акции
-                  AuditLogger.log(
-                    action: action,
-                    collection: 'store_promotions',
-                    docId: docId,
-                    changes: data,
-                  );
-                  if (mounted) Navigator.pop(context);
-                  await _loadPromotions();
                 },
                 child: Text(isEdit ? 'Сохранить' : 'Добавить'),
               ),
@@ -211,14 +223,13 @@ class _PromotionsScreenState extends State<PromotionsScreen> {
       ),
     );
     if (confirm == true) {
-      await _firestore.collection('store_promotions').doc(id).delete();
-      // 🆕 Аудит удаления
-      AuditLogger.log(
-        action: 'delete',
-        collection: 'store_promotions',
-        docId: id,
-      );
-      await _loadPromotions();
+      try {
+        await _sb.from('store_promotions').delete().eq('firestore_id', id);
+        AuditLogger.log(action: 'delete', collection: 'store_promotions', docId: id);
+        await _loadPromotions();
+      } catch (e) {
+        debugPrint('❌ _deletePromotion: $e');
+      }
     }
   }
 
@@ -255,7 +266,13 @@ class _PromotionsScreenState extends State<PromotionsScreen> {
         children: [
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-            children: weekdays.map((d) => Expanded(child: Text(d, textAlign: TextAlign.center, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold)))).toList(),
+            children: weekdays
+                .map((d) => Expanded(
+                      child: Text(d,
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+                    ))
+                .toList(),
           ),
           const SizedBox(height: 4),
           SizedBox(
@@ -288,7 +305,8 @@ class _PromotionsScreenState extends State<PromotionsScreen> {
                   child: Container(
                     margin: const EdgeInsets.all(1),
                     decoration: BoxDecoration(
-                      color: bgColor ?? (isSelected ? Theme.of(context).primaryColor.withOpacity(0.3) : Colors.transparent),
+                      color: bgColor ??
+                          (isSelected ? Theme.of(context).primaryColor.withOpacity(0.3) : Colors.transparent),
                       borderRadius: BorderRadius.circular(4),
                     ),
                     child: Center(
@@ -328,7 +346,7 @@ class _PromotionsScreenState extends State<PromotionsScreen> {
       appBar: AppBar(
         title: const Text('Календарь акций'),
         actions: [
-          IconButton(icon: const Icon(Icons.add), onPressed: _addOrEditPromotion),
+          IconButton(icon: const Icon(Icons.add), onPressed: () => _addOrEditPromotion()),
         ],
       ),
       body: SingleChildScrollView(
@@ -339,12 +357,18 @@ class _PromotionsScreenState extends State<PromotionsScreen> {
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  IconButton(onPressed: () => setState(() => _displayMonth = DateTime(_displayMonth.year, _displayMonth.month - 1, 1)), icon: const Icon(Icons.chevron_left)),
+                  IconButton(
+                    onPressed: () => setState(() => _displayMonth = DateTime(_displayMonth.year, _displayMonth.month - 1, 1)),
+                    icon: const Icon(Icons.chevron_left),
+                  ),
                   Text(
                     '${_monthName(_displayMonth.month)} ${_displayMonth.year}',
                     style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
                   ),
-                  IconButton(onPressed: () => setState(() => _displayMonth = DateTime(_displayMonth.year, _displayMonth.month + 1, 1)), icon: const Icon(Icons.chevron_right)),
+                  IconButton(
+                    onPressed: () => setState(() => _displayMonth = DateTime(_displayMonth.year, _displayMonth.month + 1, 1)),
+                    icon: const Icon(Icons.chevron_right),
+                  ),
                 ],
               ),
             ),

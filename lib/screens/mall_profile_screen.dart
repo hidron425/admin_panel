@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:supabase_flutter/supabase_flutter.dart' as supa;
 
 class MallProfileScreen extends StatefulWidget {
   final String? mallId;
@@ -10,11 +10,11 @@ class MallProfileScreen extends StatefulWidget {
 }
 
 class _MallProfileScreenState extends State<MallProfileScreen> {
-  final _firestore = FirebaseFirestore.instance;
+  supa.SupabaseClient get _sb => supa.Supabase.instance.client;
+
   final _nameController = TextEditingController();
   final _mapImageUrlController = TextEditingController();
   bool _loading = true;
-  String? _docId;
 
   @override
   void initState() {
@@ -30,42 +30,48 @@ class _MallProfileScreenState extends State<MallProfileScreen> {
   }
 
   Future<void> _loadMallData() async {
-    if (widget.mallId == null) return;
-    final snap = await _firestore
-        .collection('malls')
-        .where('id', isEqualTo: widget.mallId)
-        .limit(1)
-        .get();
-    if (snap.docs.isNotEmpty) {
-      final doc = snap.docs.first;
-      _docId = doc.id;
-      final data = doc.data() as Map<String, dynamic>;
-      _nameController.text = data['name'] ?? widget.mallId!;
-      _mapImageUrlController.text = data['mapImageUrl'] ?? '';
-    } else {
-      _nameController.text = widget.mallId!;
+    if (widget.mallId == null) {
+      if (mounted) setState(() => _loading = false);
+      return;
     }
-    setState(() => _loading = false);
+    try {
+      final data = await _sb
+          .from('malls')
+          .select()
+          .eq('firestore_id', widget.mallId!)
+          .maybeSingle();
+      if (data != null) {
+        _nameController.text = data['name'] ?? widget.mallId!;
+        _mapImageUrlController.text = data['map_image_url'] ?? '';
+      } else {
+        _nameController.text = widget.mallId!;
+      }
+    } catch (e) {
+      debugPrint('❌ _loadMallData: $e');
+    }
+    if (mounted) setState(() => _loading = false);
   }
 
   Future<void> _saveMallProfile() async {
-    final data = {
+    final data = <String, dynamic>{
+      'firestore_id': widget.mallId,
       'name': _nameController.text.trim(),
-      'mapImageUrl': _mapImageUrlController.text.trim(),
+      'map_image_url': _mapImageUrlController.text.trim(),
     };
-    if (_docId != null) {
-      await _firestore.collection('malls').doc(_docId).update(data);
-    } else {
-      final ref = await _firestore.collection('malls').add({
-        ...data,
-        'id': widget.mallId,
-      });
-      _docId = ref.id;
-    }
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Профиль ТЦ сохранён')),
-      );
+    try {
+      await _sb.from('malls').upsert(data, onConflict: 'firestore_id');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Профиль ТЦ сохранён')),
+        );
+      }
+    } catch (e) {
+      debugPrint('❌ _saveMallProfile: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Ошибка: $e')),
+        );
+      }
     }
   }
 

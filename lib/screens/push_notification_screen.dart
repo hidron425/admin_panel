@@ -1,10 +1,8 @@
 import 'package:flutter/material.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:cloud_functions/cloud_functions.dart';
-import 'package:firebase_auth/firebase_auth.dart';
+import 'package:supabase_flutter/supabase_flutter.dart' as supa;
 import 'package:intl/intl.dart';
 import 'package:admin_panel/utils/audit.dart';
-import 'package:admin_panel/utils/app_state.dart';   // 🆕 глобальное состояние
+import 'package:admin_panel/utils/app_state.dart';
 
 class PushNotificationScreen extends StatefulWidget {
   const PushNotificationScreen({super.key});
@@ -14,13 +12,12 @@ class PushNotificationScreen extends StatefulWidget {
 }
 
 class _PushNotificationScreenState extends State<PushNotificationScreen> {
-  final _firestore = FirebaseFirestore.instance;
-  final _functions = FirebaseFunctions.instance;
+  supa.SupabaseClient get _sb => supa.Supabase.instance.client;
+
   final _titleController = TextEditingController();
   final _bodyController = TextEditingController();
   final _templateNameController = TextEditingController();
 
-  // Сегментация
   String? _selectedCity;
   String? _selectedMall;
   int? _minStepsCompleted;
@@ -33,39 +30,74 @@ class _PushNotificationScreenState extends State<PushNotificationScreen> {
 
   List<Map<String, dynamic>> _templates = [];
   bool _templatesLoaded = false;
+  List<String> _cities = [];
+  List<String> _malls = [];
+  bool _loadingFilters = true;
 
   @override
   void initState() {
     super.initState();
-    _selectedMall = AppState.selectedMallId.value;   // 🆕 начальное значение
-    AppState.selectedMallId.addListener(_onGlobalMallChanged);   // 🆕 подписка
+    _selectedMall = AppState.selectedMallId.value;
+    AppState.selectedMallId.addListener(_onGlobalMallChanged);
     _loadTemplates();
+    _loadFilters();
   }
 
   @override
   void dispose() {
-    AppState.selectedMallId.removeListener(_onGlobalMallChanged);   // 🆕 отписка
+    AppState.selectedMallId.removeListener(_onGlobalMallChanged);
     _titleController.dispose();
     _bodyController.dispose();
     _templateNameController.dispose();
     super.dispose();
   }
 
-  // 🆕 Обработчик изменения глобального ТЦ
   void _onGlobalMallChanged() {
     if (_selectedMall != AppState.selectedMallId.value) {
-      setState(() {
-        _selectedMall = AppState.selectedMallId.value;
-      });
+      setState(() => _selectedMall = AppState.selectedMallId.value);
+    }
+  }
+
+  Future<void> _loadFilters() async {
+    try {
+      final data = await _sb
+          .from('user_progress')
+          .select('selected_city, selected_mall');
+      final cities = <String>{};
+      final malls = <String>{};
+      for (final row in data as List) {
+        final m = Map<String, dynamic>.from(row);
+        final c = m['selected_city'] as String?;
+        final ml = m['selected_mall'] as String?;
+        if (c != null && c.isNotEmpty) cities.add(c);
+        if (ml != null && ml.isNotEmpty) malls.add(ml);
+      }
+      if (mounted) {
+        setState(() {
+          _cities = cities.toList()..sort();
+          _malls = malls.toList()..sort();
+          _loadingFilters = false;
+        });
+      }
+    } catch (e) {
+      debugPrint('❌ _loadFilters: $e');
+      if (mounted) setState(() => _loadingFilters = false);
     }
   }
 
   Future<void> _loadTemplates() async {
-    final snap = await _firestore.collection('push_templates').get();
-    setState(() {
-      _templates = snap.docs.map((d) => d.data() as Map<String, dynamic>).toList();
-      _templatesLoaded = true;
-    });
+    try {
+      final data = await _sb.from('push_templates').select();
+      if (mounted) {
+        setState(() {
+          _templates = (data as List).map((j) => Map<String, dynamic>.from(j)).toList();
+          _templatesLoaded = true;
+        });
+      }
+    } catch (e) {
+      debugPrint('❌ _loadTemplates: $e');
+      if (mounted) setState(() => _templatesLoaded = true);
+    }
   }
 
   Future<void> _saveTemplate() async {
@@ -74,16 +106,19 @@ class _PushNotificationScreenState extends State<PushNotificationScreen> {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Введите название шаблона')));
       return;
     }
-    await _firestore.collection('push_templates').add({
-      'name': name,
-      'title': _titleController.text.trim(),
-      'body': _bodyController.text.trim(),
-      'createdAt': FieldValue.serverTimestamp(),
-    });
-    _templateNameController.clear();
-    await _loadTemplates();
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Шаблон сохранён')));
+    try {
+      await _sb.from('push_templates').insert({
+        'name': name,
+        'title': _titleController.text.trim(),
+        'body': _bodyController.text.trim(),
+      });
+      _templateNameController.clear();
+      await _loadTemplates();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Шаблон сохранён')));
+      }
+    } catch (e) {
+      debugPrint('❌ _saveTemplate: $e');
     }
   }
 
@@ -115,50 +150,45 @@ class _PushNotificationScreenState extends State<PushNotificationScreen> {
     }
 
     setState(() => _sending = true);
-
     try {
-      final segment = {
-        'city': _selectedCity,
-        'mall': _selectedMall,
-        'minStepsCompleted': _minStepsCompleted,
-        'activeWithinDays': _activeWithinDays,
-      };
-      final message = {
+      // Записываем в очередь push_queue. Реальная отправка — через Cloud Function / воркер.
+      await _sb.from('push_queue').insert({
         'title': _titleController.text.trim(),
         'body': _bodyController.text.trim(),
-      };
-
-      final callable = _functions.httpsCallable('sendPushToSegment');
-      final result = await callable.call({
-        'segment': segment,
-        'message': message,
-        'scheduledAt': sendAt?.toIso8601String(),
+        'priority': 1,
+        'urgent': false,
+        'status': 'pending',
+        'firestore_id': DateTime.now().millisecondsSinceEpoch.toString(),
+        'created_at': DateTime.now().toIso8601String(),
       });
 
-      if (result.data['success'] == true) {
-        AuditLogger.log(
-          action: _scheduled ? 'schedule_push' : 'send_push',
-          collection: 'notifications',
-          docId: 'segment',
-          changes: {'segment': segment, 'message': message, 'scheduledAt': sendAt?.toIso8601String()},
-        );
+      AuditLogger.log(
+        action: _scheduled ? 'schedule_push' : 'send_push',
+        collection: 'push_queue',
+        docId: 'segment',
+        changes: {
+          'city': _selectedCity,
+          'mall': _selectedMall,
+          'title': _titleController.text.trim(),
+          'body': _bodyController.text.trim(),
+          'scheduledAt': sendAt?.toIso8601String(),
+        },
+      );
 
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text(_scheduled ? 'Уведомление запланировано на ${DateFormat('dd.MM.yyyy HH:mm').format(sendAt!)}' : 'Уведомление отправляется')),
-          );
-          _titleController.clear();
-          _bodyController.clear();
-          setState(() {
-            _scheduled = false;
-            _scheduledDate = null;
-            _scheduledTime = null;
-          });
-        }
-      } else {
-        throw Exception(result.data['error'] ?? 'Неизвестная ошибка');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(_scheduled ? 'Уведомление запланировано' : 'Уведомление добавлено в очередь')),
+        );
+        _titleController.clear();
+        _bodyController.clear();
+        setState(() {
+          _scheduled = false;
+          _scheduledDate = null;
+          _scheduledTime = null;
+        });
       }
     } catch (e) {
+      debugPrint('❌ _sendPush: $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Ошибка: $e')));
       }
@@ -198,43 +228,32 @@ class _PushNotificationScreenState extends State<PushNotificationScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // ----- Сегментация -----
             const Text('Сегментация получателей', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
             const SizedBox(height: 12),
-            FutureBuilder<QuerySnapshot>(
-              future: _firestore.collection('user_progress').get(),
-              builder: (context, snapshot) {
-                if (!snapshot.hasData) return const SizedBox.shrink();
-                final cities = snapshot.data!.docs
-                    .map((d) => (d.data() as Map<String, dynamic>)['selectedCity'] as String?)
-                    .where((c) => c != null && c.isNotEmpty)
-                    .toSet()
-                    .toList()..sort();
-                final malls = snapshot.data!.docs
-                    .map((d) => (d.data() as Map<String, dynamic>)['selectedMall'] as String?)
-                    .where((m) => m != null && m.isNotEmpty)
-                    .toSet()
-                    .toList()..sort();
-
-                return Column(
-                  children: [
-                    DropdownButtonFormField<String?>(
-                      value: _selectedCity,
-                      decoration: const InputDecoration(labelText: 'Город', border: OutlineInputBorder()),
-                      items: [null, ...cities].map((c) => DropdownMenuItem(value: c, child: Text(c ?? 'Все города'))).toList(),
-                      onChanged: (v) => setState(() => _selectedCity = v),
-                    ),
-                    const SizedBox(height: 12),
-                    DropdownButtonFormField<String?>(
-                      value: _selectedMall,
-                      decoration: const InputDecoration(labelText: 'Торговый центр', border: OutlineInputBorder()),
-                      items: [null, ...malls].map((m) => DropdownMenuItem(value: m, child: Text(m ?? 'Все ТЦ'))).toList(),
-                      onChanged: (v) => setState(() => _selectedMall = v),
-                    ),
-                  ],
-                );
-              },
-            ),
+            if (_loadingFilters)
+              const Center(child: CircularProgressIndicator())
+            else
+              Column(
+                children: [
+                  DropdownButtonFormField<String?>(
+                    value: _selectedCity,
+                    decoration: const InputDecoration(labelText: 'Город', border: OutlineInputBorder()),
+                    items: [null, ..._cities]
+                        .map((c) => DropdownMenuItem(value: c, child: Text(c ?? 'Все города')))
+                        .toList(),
+                    onChanged: (v) => setState(() => _selectedCity = v),
+                  ),
+                  const SizedBox(height: 12),
+                  DropdownButtonFormField<String?>(
+                    value: _selectedMall,
+                    decoration: const InputDecoration(labelText: 'Торговый центр', border: OutlineInputBorder()),
+                    items: [null, ..._malls]
+                        .map((m) => DropdownMenuItem(value: m, child: Text(m ?? 'Все ТЦ')))
+                        .toList(),
+                    onChanged: (v) => setState(() => _selectedMall = v),
+                  ),
+                ],
+              ),
             const SizedBox(height: 12),
             TextFormField(
               initialValue: _minStepsCompleted?.toString(),
@@ -249,10 +268,7 @@ class _PushNotificationScreenState extends State<PushNotificationScreen> {
               keyboardType: TextInputType.number,
               onChanged: (v) => setState(() => _activeWithinDays = int.tryParse(v)),
             ),
-
             const Divider(height: 32),
-
-            // ----- Сообщение -----
             const Text('Сообщение', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
             const SizedBox(height: 12),
             TextField(
@@ -266,8 +282,6 @@ class _PushNotificationScreenState extends State<PushNotificationScreen> {
               maxLines: 3,
             ),
             const SizedBox(height: 12),
-
-            // ----- Отправка -----
             Row(
               children: [
                 Expanded(
@@ -304,12 +318,13 @@ class _PushNotificationScreenState extends State<PushNotificationScreen> {
                 ],
               ),
             ],
-
             const SizedBox(height: 24),
             Center(
               child: ElevatedButton.icon(
                 onPressed: _sending ? null : _sendPush,
-                icon: _sending ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Icon(Icons.send),
+                icon: _sending
+                    ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                    : const Icon(Icons.send),
                 label: Text(_scheduled ? 'Запланировать' : 'Отправить'),
                 style: ElevatedButton.styleFrom(
                   backgroundColor: const Color(0xFF6C63FF),
@@ -318,10 +333,7 @@ class _PushNotificationScreenState extends State<PushNotificationScreen> {
                 ),
               ),
             ),
-
             const Divider(height: 32),
-
-            // ----- Шаблоны -----
             Row(
               children: [
                 const Expanded(
@@ -340,8 +352,7 @@ class _PushNotificationScreenState extends State<PushNotificationScreen> {
             else if (_templates.isEmpty)
               const Text('Нет сохранённых шаблонов')
             else
-              ...List.generate(_templates.length, (index) {
-                final t = _templates[index];
+              ..._templates.map((t) {
                 return Card(
                   child: ListTile(
                     title: Text(t['name'] ?? 'Без названия'),

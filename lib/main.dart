@@ -1,15 +1,13 @@
 import 'package:flutter/material.dart';
-import 'package:firebase_core/firebase_core.dart';
-import 'package:firebase_auth/firebase_auth.dart';
-import 'firebase_options.dart';
+import 'package:supabase_flutter/supabase_flutter.dart' as supa;
 import 'screens/login_screen.dart';
 import 'screens/admin_screen.dart';
-import 'package:cloud_functions/cloud_functions.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await Firebase.initializeApp(
-    options: DefaultFirebaseOptions.currentPlatform,
+  await supa.Supabase.initialize(
+    url: 'https://cthxobhlihzcehlwruyf.supabase.co',
+    anonKey: 'sb_publishable_FjQlbyG5efSoCI7YMOrWSg_9kHwkw5A',
   );
   runApp(const MyApp());
 }
@@ -22,17 +20,14 @@ class MyApp extends StatelessWidget {
     return MaterialApp(
       title: 'Admin Panel',
       theme: ThemeData(useMaterial3: true),
-      home: StreamBuilder<User?>(
-        stream: FirebaseAuth.instance.authStateChanges(),
+      home: StreamBuilder<supa.AuthState>(
+        stream: supa.Supabase.instance.client.auth.onAuthStateChange,
         builder: (context, snapshot) {
-          if (snapshot.connectionState == ConnectionState.active) {
-            final user = snapshot.data;
-            if (user == null) {
-              return const LoginScreen();
-            }
-            return AdminScreen(user: user);
+          final session = supa.Supabase.instance.client.auth.currentSession;
+          if (session == null) {
+            return const LoginScreen();
           }
-          return const Scaffold(body: Center(child: CircularProgressIndicator()));
+          return AdminScreen(userEmail: session.user.email ?? '');
         },
       ),
     );

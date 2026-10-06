@@ -1,10 +1,10 @@
 import 'package:flutter/material.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart';
+import 'package:supabase_flutter/supabase_flutter.dart' as supa;
 import 'package:intl/intl.dart';
 import 'dart:math' as math;
 import 'promotions_screen.dart';
 import 'stats_screen.dart';
+import 'push_notification_screen.dart';
 import 'package:admin_panel/utils/audit.dart';
 
 class StoreScreen extends StatefulWidget {
@@ -16,8 +16,8 @@ class StoreScreen extends StatefulWidget {
 }
 
 class _StoreScreenState extends State<StoreScreen> {
-  final _firestore = FirebaseFirestore.instance;
-  final _auth = FirebaseAuth.instance;
+  supa.SupabaseClient get _sb => supa.Supabase.instance.client;
+
   String? _storeId;
   bool _loading = true;
   Map<String, dynamic> _shopData = {};
@@ -80,149 +80,190 @@ class _StoreScreenState extends State<StoreScreen> {
   }
 
   Future<void> _getStoreId() async {
-    final user = _auth.currentUser;
-    if (user != null && user.email != null) {
-      final doc = await _firestore.collection('users').doc(user.email!).get();
-      if (mounted) {
-        setState(() {
-          _storeId = doc.data()?['storeId'] as String?;
-        });
+    try {
+      final email = _sb.auth.currentUser?.email;
+      if (email != null) {
+        final data = await _sb
+            .from('user_metadata')
+            .select('store_id')
+            .eq('email', email)
+            .maybeSingle();
+        if (mounted) {
+          setState(() => _storeId = data?['store_id'] as String?);
+        }
+        if (_storeId != null) {
+          await _loadShopData();
+          await _loadStats();
+          await _loadNearestPromotion();
+          await _loadLastNotification();
+        }
       }
-      if (_storeId != null) {
-        await _loadShopData();
-        await _loadStats();
-        await _loadNearestPromotion();
-        await _loadLastNotification();
-      }
-      if (mounted) setState(() => _loading = false);
-    } else {
-      if (mounted) setState(() => _loading = false);
+    } catch (e) {
+      debugPrint('❌ _getStoreId: $e');
     }
+    if (mounted) setState(() => _loading = false);
   }
 
   Future<void> _loadShopData() async {
-    final doc = await _firestore.collection('shops').doc(_storeId).get();
-    if (doc.exists) {
-      _shopData = doc.data() as Map<String, dynamic>;
-      _nameController.text = _shopData['name'] ?? '';
-      _imageUrlController.text = _shopData['imageUrl'] ?? '';
-      _descriptionController.text = _shopData['description'] ?? '';
-      _shortDiscountController.text = _shopData['shortDiscount'] ?? '';
-      _discountController.text = _shopData['discount'] ?? '';
-      _infoImageUrlController.text = _shopData['infoImageUrl'] ?? '';
-      _mapXController.text = (_shopData['mapX'] ?? 0.5).toString();
-      _mapYController.text = (_shopData['mapY'] ?? 0.5).toString();
-      _mapWidthController.text = (_shopData['mapWidth'] ?? 0.1).toString();
-      _mapHeightController.text = (_shopData['mapHeight'] ?? 0.1).toString();
+    try {
+      final data = await _sb
+          .from('shops')
+          .select()
+          .eq('firestore_id', _storeId!)
+          .maybeSingle();
+      if (data != null) {
+        _shopData = Map<String, dynamic>.from(data);
+        _nameController.text = _shopData['name'] ?? '';
+        _imageUrlController.text = _shopData['image_url'] ?? '';
+        _descriptionController.text = _shopData['description'] ?? '';
+        _shortDiscountController.text = _shopData['short_discount'] ?? '';
+        _discountController.text = _shopData['discount'] ?? '';
+        _infoImageUrlController.text = _shopData['info_image_url'] ?? '';
+        _mapXController.text = (_shopData['map_x'] ?? 0.5).toString();
+        _mapYController.text = (_shopData['map_y'] ?? 0.5).toString();
+        _mapWidthController.text = (_shopData['map_width'] ?? 0.1).toString();
+        _mapHeightController.text = (_shopData['map_height'] ?? 0.1).toString();
 
-      _restoreTransform(_logoTransformController, _shopData['imageTransform']);
-      _restoreTransform(_infoImageTransformController, _shopData['infoImageTransform']);
+        _restoreTransform(_logoTransformController, _shopData['image_transform']);
+        _restoreTransform(_infoImageTransformController, _shopData['info_image_transform']);
+      }
+    } catch (e) {
+      debugPrint('❌ _loadShopData: $e');
     }
     if (mounted) setState(() {});
   }
 
   void _restoreTransform(TransformationController controller, dynamic raw) {
     if (raw is List && raw.length == 16) {
-      controller.value = Matrix4.fromList(raw.cast<double>());
+      try {
+        controller.value = Matrix4.fromList(raw.map((e) => (e as num).toDouble()).toList());
+      } catch (_) {
+        controller.value = Matrix4.identity();
+      }
     } else {
       controller.value = Matrix4.identity();
     }
   }
 
   Future<void> _loadStats() async {
-    final now = DateTime.now();
-    final todayStart = DateTime(now.year, now.month, now.day);
-    final weekStart = now.subtract(const Duration(days: 7));
+    try {
+      final now = DateTime.now();
+      final todayStart = DateTime(now.year, now.month, now.day);
+      final weekStart = now.subtract(const Duration(days: 7));
 
-    final todayQuery = await _firestore
-        .collection('sales')
-        .where('shopId', isEqualTo: _storeId)
-        .where('timestamp', isGreaterThanOrEqualTo: Timestamp.fromDate(todayStart))
-        .get();
-    _todayActivations = todayQuery.docs.length;
+      final todayData = await _sb
+          .from('sales')
+          .select('firestore_id')
+          .eq('shop_id', _storeId!)
+          .gte('created_at', todayStart.toIso8601String());
+      _todayActivations = (todayData as List).length;
 
-    final weekQuery = await _firestore
-        .collection('sales')
-        .where('shopId', isEqualTo: _storeId)
-        .where('timestamp', isGreaterThanOrEqualTo: Timestamp.fromDate(weekStart))
-        .where('step', isEqualTo: 1)
-        .get();
-    _newClientsWeek = weekQuery.docs.length;
+      final weekData = await _sb
+          .from('sales')
+          .select('firestore_id')
+          .eq('shop_id', _storeId!)
+          .eq('step', 1)
+          .gte('created_at', weekStart.toIso8601String());
+      _newClientsWeek = (weekData as List).length;
+    } catch (e) {
+      debugPrint('❌ _loadStats: $e');
+    }
   }
 
   Future<void> _loadNearestPromotion() async {
-    final now = DateTime.now();
-    final snapshot = await _firestore
-        .collection('store_promotions')
-        .where('shopId', isEqualTo: _storeId)
-        .where('endDate', isGreaterThanOrEqualTo: Timestamp.fromDate(now))
-        .orderBy('startDate')
-        .limit(1)
-        .get();
-    if (snapshot.docs.isNotEmpty) {
-      final data = snapshot.docs.first.data();
-      _nearestPromotion = {
-        'id': snapshot.docs.first.id,
-        'title': data['title'],
-        'startDate': (data['startDate'] as Timestamp).toDate(),
-        'endDate': (data['endDate'] as Timestamp).toDate(),
-        'discount': data['discount'],
-      };
-    } else {
+    try {
+      final now = DateTime.now();
+      final data = await _sb
+          .from('store_promotions')
+          .select()
+          .eq('shop_id', _storeId!)
+          .gte('end_date', now.toIso8601String())
+          .order('start_date', ascending: true)
+          .limit(1)
+          .maybeSingle();
+
+      if (data != null) {
+        _nearestPromotion = {
+          'id': data['firestore_id'] ?? data['id'],
+          'title': data['title'],
+          'startDate': DateTime.tryParse(data['start_date']?.toString() ?? '') ?? now,
+          'endDate': DateTime.tryParse(data['end_date']?.toString() ?? '') ?? now,
+          'discount': data['discount'],
+        };
+      } else {
+        _nearestPromotion = null;
+      }
+    } catch (e) {
+      debugPrint('❌ _loadNearestPromotion: $e');
       _nearestPromotion = null;
     }
   }
 
   Future<void> _loadLastNotification() async {
-    final snapshot = await _firestore
-        .collection('notifications')
-        .where('shopId', isEqualTo: _storeId)
-        .orderBy('timestamp', descending: true)
-        .limit(1)
-        .get();
-    if (snapshot.docs.isNotEmpty) {
-      final data = snapshot.docs.first.data();
-      _lastNotification = {
-        'title': data['title'],
-        'body': data['body'],
-        'timestamp': (data['timestamp'] as Timestamp).toDate(),
-      };
-    } else {
+    try {
+      final data = await _sb
+          .from('push_queue')
+          .select()
+          .eq('shop_id', _storeId!)
+          .order('created_at', ascending: false)
+          .limit(1)
+          .maybeSingle();
+
+      if (data != null) {
+        _lastNotification = {
+          'title': data['title'],
+          'body': data['body'],
+          'timestamp': DateTime.tryParse(data['created_at']?.toString() ?? '') ?? DateTime.now(),
+        };
+      } else {
+        _lastNotification = null;
+      }
+    } catch (e) {
+      debugPrint('❌ _loadLastNotification: $e');
       _lastNotification = null;
     }
   }
 
   Future<void> _saveAllChanges() async {
-    final updatedData = {
+    final updatedData = <String, dynamic>{
       'name': _nameController.text.trim(),
-      'imageUrl': _imageUrlController.text.trim(),
+      'image_url': _imageUrlController.text.trim(),
       'description': _descriptionController.text.trim(),
-      'shortDiscount': _shortDiscountController.text.trim(),
+      'short_discount': _shortDiscountController.text.trim(),
       'discount': _discountController.text.trim(),
-      'infoImageUrl': _infoImageUrlController.text.trim(),
-      'mapX': double.tryParse(_mapXController.text) ?? 0.5,
-      'mapY': double.tryParse(_mapYController.text) ?? 0.5,
-      'mapWidth': double.tryParse(_mapWidthController.text) ?? 0.1,
-      'mapHeight': double.tryParse(_mapHeightController.text) ?? 0.1,
-      'imageTransform': _logoTransformController.value.storage.toList(),
-      'infoImageTransform': _infoImageTransformController.value.storage.toList(),
+      'info_image_url': _infoImageUrlController.text.trim(),
+      'map_x': double.tryParse(_mapXController.text) ?? 0.5,
+      'map_y': double.tryParse(_mapYController.text) ?? 0.5,
+      'map_width': double.tryParse(_mapWidthController.text) ?? 0.1,
+      'map_height': double.tryParse(_mapHeightController.text) ?? 0.1,
+      'image_transform': _logoTransformController.value.storage.toList(),
+      'info_image_transform': _infoImageTransformController.value.storage.toList(),
     };
 
-    await _firestore.collection('shops').doc(_storeId).update(updatedData);
-    AuditLogger.log(
-      action: 'update',
-      collection: 'shops',
-      docId: _storeId!,
-      changes: updatedData,
-    );
-
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Все изменения сохранены')),
+    try {
+      await _sb.from('shops').update(updatedData).eq('firestore_id', _storeId!);
+      AuditLogger.log(
+        action: 'update',
+        collection: 'shops',
+        docId: _storeId!,
+        changes: updatedData,
       );
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Все изменения сохранены')),
+        );
+      }
+      _shopData.addAll(updatedData);
+      if (mounted) setState(() {});
+    } catch (e) {
+      debugPrint('❌ _saveAllChanges: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Ошибка: $e')),
+        );
+      }
     }
-    _shopData.addAll(updatedData);
-    setState(() {});
   }
 
   Future<void> _openImageEditor({
@@ -263,11 +304,11 @@ class _StoreScreenState extends State<StoreScreen> {
   }
 
   void _goToNotifications() {
-    Navigator.push(context, MaterialPageRoute(builder: (_) => const StatsScreen(initialTabIndex: 2)));
+    Navigator.push(context, MaterialPageRoute(builder: (_) => const PushNotificationScreen()));
   }
 
   Future<void> _onUpgradePriority() async {
-    final currentPriority = _shopData['priority'] ?? 1;
+    final currentPriority = (_shopData['priority'] as num?)?.toInt() ?? 1;
     if (currentPriority >= 5) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Максимальный приоритет уже достигнут')),
@@ -278,7 +319,8 @@ class _StoreScreenState extends State<StoreScreen> {
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Повысить приоритет'),
-        content: Text('Ваш текущий приоритет: $currentPriority\nПовысить до ${currentPriority + 1} за 5000 руб.?\n(В боевой версии здесь будет платёжный шлюз)'),
+        content: Text(
+            'Ваш текущий приоритет: $currentPriority\nПовысить до ${currentPriority + 1} за 5000 руб.?'),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Отмена')),
           ElevatedButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Оплатить')),
@@ -286,18 +328,24 @@ class _StoreScreenState extends State<StoreScreen> {
       ),
     );
     if (confirm == true) {
-      await _firestore.collection('shops').doc(_storeId).update({'priority': currentPriority + 1});
-      AuditLogger.log(
-        action: 'update',
-        collection: 'shops',
-        docId: _storeId!,
-        changes: {'priority': currentPriority + 1},
-      );
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Приоритет повышен!')),
+      try {
+        await _sb
+            .from('shops')
+            .update({'priority': currentPriority + 1}).eq('firestore_id', _storeId!);
+        AuditLogger.log(
+          action: 'update',
+          collection: 'shops',
+          docId: _storeId!,
+          changes: {'priority': currentPriority + 1},
         );
-        setState(() => _shopData['priority'] = currentPriority + 1);
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Приоритет повышен!')),
+          );
+          setState(() => _shopData['priority'] = currentPriority + 1);
+        }
+      } catch (e) {
+        debugPrint('❌ _onUpgradePriority: $e');
       }
     }
   }
@@ -313,7 +361,7 @@ class _StoreScreenState extends State<StoreScreen> {
             const Text('Не удалось определить ваш магазин. Обратитесь к администратору.'),
             const SizedBox(height: 16),
             ElevatedButton(
-              onPressed: () => FirebaseAuth.instance.signOut(),
+              onPressed: () => _sb.auth.signOut(),
               child: const Text('Выйти'),
             ),
           ],
@@ -321,7 +369,7 @@ class _StoreScreenState extends State<StoreScreen> {
       );
     }
 
-    final priority = _shopData['priority'] ?? 1;
+    final priority = (_shopData['priority'] as num?)?.toInt() ?? 1;
     final shopName = _shopData['name'] ?? 'Мой магазин';
 
     return SingleChildScrollView(
@@ -329,15 +377,16 @@ class _StoreScreenState extends State<StoreScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Приветствие и кнопка сохранения
           Row(
             children: [
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text('Добро пожаловать!', style: TextStyle(fontSize: 18, color: Colors.grey)),
-                    Text(shopName, style: const TextStyle(fontSize: 28, fontWeight: FontWeight.bold)),
+                    const Text('Добро пожаловать!',
+                        style: TextStyle(fontSize: 18, color: Colors.grey)),
+                    Text(shopName,
+                        style: const TextStyle(fontSize: 28, fontWeight: FontWeight.bold)),
                   ],
                 ),
               ),
@@ -355,7 +404,6 @@ class _StoreScreenState extends State<StoreScreen> {
           ),
           const SizedBox(height: 24),
 
-          // Карточка быстрой статистики
           _buildInfoCard(
             icon: Icons.trending_up,
             title: 'Быстрая статистика',
@@ -369,13 +417,9 @@ class _StoreScreenState extends State<StoreScreen> {
           ),
 
           const SizedBox(height: 16),
-
-          // Быстрые действия
           _buildQuickActions(),
-
           const SizedBox(height: 24),
 
-          // Настройки магазина в раскрывающихся карточках
           _buildSettingsCard(
             title: 'Логотип и информация',
             icon: Icons.edit,
@@ -406,9 +450,11 @@ class _StoreScreenState extends State<StoreScreen> {
                 : Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(_nearestPromotion!['title'], style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                      Text(_nearestPromotion!['title'],
+                          style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
                       const SizedBox(height: 4),
-                      Text('${_nearestPromotion!['discount']} — с ${DateFormat('dd.MM.yyyy').format(_nearestPromotion!['startDate'])} по ${DateFormat('dd.MM.yyyy').format(_nearestPromotion!['endDate'])}'),
+                      Text(
+                          '${_nearestPromotion!['discount']} — с ${DateFormat('dd.MM.yyyy').format(_nearestPromotion!['startDate'])} по ${DateFormat('dd.MM.yyyy').format(_nearestPromotion!['endDate'])}'),
                     ],
                   ),
             trailing: TextButton(
@@ -427,11 +473,14 @@ class _StoreScreenState extends State<StoreScreen> {
                 : Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(_lastNotification!['title'], style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
+                      Text(_lastNotification!['title'],
+                          style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
                       const SizedBox(height: 4),
-                      Text(_lastNotification!['body'], maxLines: 2, overflow: TextOverflow.ellipsis),
+                      Text(_lastNotification!['body'],
+                          maxLines: 2, overflow: TextOverflow.ellipsis),
                       const SizedBox(height: 4),
-                      Text(DateFormat('dd.MM.yyyy HH:mm').format(_lastNotification!['timestamp']),
+                      Text(
+                          DateFormat('dd.MM.yyyy HH:mm').format(_lastNotification!['timestamp']),
                           style: const TextStyle(fontSize: 10, color: Colors.grey)),
                     ],
                   ),
@@ -451,7 +500,8 @@ class _StoreScreenState extends State<StoreScreen> {
                 Chip(label: Text('$priority'), backgroundColor: Colors.blue.shade100),
                 const SizedBox(width: 12),
                 Expanded(
-                  child: Text('Чем выше приоритет, тем чаще ваши акции предлагаются пользователям.',
+                  child: Text(
+                      'Чем выше приоритет, тем чаще ваши акции предлагаются пользователям.',
                       style: TextStyle(fontSize: 12, color: Colors.grey[700])),
                 ),
               ],
@@ -460,15 +510,14 @@ class _StoreScreenState extends State<StoreScreen> {
               onPressed: _onUpgradePriority,
               icon: const Icon(Icons.trending_up),
               label: const Text('Повысить'),
-              style: ElevatedButton.styleFrom(backgroundColor: Colors.orange, foregroundColor: Colors.white),
+              style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.orange, foregroundColor: Colors.white),
             ),
           ),
         ],
       ),
     );
   }
-
-  // ========== Вспомогательные виджеты ==========
 
   Widget _buildInfoCard({
     required IconData icon,
@@ -488,7 +537,9 @@ class _StoreScreenState extends State<StoreScreen> {
               children: [
                 Icon(icon, size: 20, color: const Color(0xFF6C63FF)),
                 const SizedBox(width: 8),
-                Expanded(child: Text(title, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold))),
+                Expanded(
+                    child: Text(title,
+                        style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold))),
                 if (trailing != null) trailing,
               ],
             ),
@@ -531,7 +582,8 @@ class _StoreScreenState extends State<StoreScreen> {
                   padding: const EdgeInsets.all(12),
                   child: Column(
                     children: [
-                      Icon(action['icon'] as IconData, size: 28, color: const Color(0xFF6C63FF)),
+                      Icon(action['icon'] as IconData,
+                          size: 28, color: const Color(0xFF6C63FF)),
                       const SizedBox(height: 8),
                       Text(action['title'] as String, textAlign: TextAlign.center),
                     ],
@@ -555,7 +607,8 @@ class _StoreScreenState extends State<StoreScreen> {
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
       child: ExpansionTile(
         leading: Icon(icon, color: const Color(0xFF6C63FF)),
-        title: Text(title, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+        title: Text(title,
+            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
         children: [
           Padding(
             padding: const EdgeInsets.all(16),
@@ -570,7 +623,8 @@ class _StoreScreenState extends State<StoreScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Text('Логотип для главного экрана', style: TextStyle(fontWeight: FontWeight.bold)),
+        const Text('Логотип для главного экрана',
+            style: TextStyle(fontWeight: FontWeight.bold)),
         const SizedBox(height: 8),
         Row(
           children: [
@@ -582,16 +636,22 @@ class _StoreScreenState extends State<StoreScreen> {
                 child: _imageUrlController.text.isNotEmpty
                     ? Transform(
                         transform: _logoTransformController.value,
-                        child: Image.network(_imageUrlController.text, fit: BoxFit.cover,
-                            errorBuilder: (_, __, ___) => Container(color: Colors.grey[200], child: const Icon(Icons.broken_image))))
-                    : Container(color: Colors.grey[200], child: const Icon(Icons.image)),
+                        child: Image.network(_imageUrlController.text,
+                            fit: BoxFit.cover,
+                            errorBuilder: (_, __, ___) => Container(
+                                color: Colors.grey[200],
+                                child: const Icon(Icons.broken_image))),
+                      )
+                    : Container(
+                        color: Colors.grey[200], child: const Icon(Icons.image)),
               ),
             ),
             const SizedBox(width: 16),
             Expanded(
               child: TextFormField(
                 controller: _imageUrlController,
-                decoration: const InputDecoration(labelText: 'URL изображения', border: OutlineInputBorder()),
+                decoration: const InputDecoration(
+                    labelText: 'URL изображения', border: OutlineInputBorder()),
               ),
             ),
             IconButton(
@@ -614,15 +674,26 @@ class _StoreScreenState extends State<StoreScreen> {
       children: [
         const Text('Информация о магазине', style: TextStyle(fontWeight: FontWeight.bold)),
         const SizedBox(height: 8),
-        TextFormField(controller: _nameController, decoration: const InputDecoration(labelText: 'Название магазина')),
+        TextFormField(
+            controller: _nameController,
+            decoration: const InputDecoration(labelText: 'Название магазина')),
         const SizedBox(height: 12),
-        TextFormField(controller: _descriptionController, maxLines: 3, decoration: const InputDecoration(labelText: 'Описание')),
+        TextFormField(
+            controller: _descriptionController,
+            maxLines: 3,
+            decoration: const InputDecoration(labelText: 'Описание')),
         const SizedBox(height: 12),
-        TextFormField(controller: _shortDiscountController, decoration: const InputDecoration(labelText: 'Краткая скидка (для карточки)')),
+        TextFormField(
+            controller: _shortDiscountController,
+            decoration: const InputDecoration(labelText: 'Краткая скидка (для карточки)')),
         const SizedBox(height: 12),
-        TextFormField(controller: _discountController, maxLines: 3, decoration: const InputDecoration(labelText: 'Подробное описание акции')),
+        TextFormField(
+            controller: _discountController,
+            maxLines: 3,
+            decoration: const InputDecoration(labelText: 'Подробное описание акции')),
         const SizedBox(height: 12),
-        const Text('Фото для подробной информации', style: TextStyle(fontWeight: FontWeight.bold)),
+        const Text('Фото для подробной информации',
+            style: TextStyle(fontWeight: FontWeight.bold)),
         const SizedBox(height: 8),
         Row(
           children: [
@@ -634,16 +705,22 @@ class _StoreScreenState extends State<StoreScreen> {
                 child: _infoImageUrlController.text.isNotEmpty
                     ? Transform(
                         transform: _infoImageTransformController.value,
-                        child: Image.network(_infoImageUrlController.text, fit: BoxFit.cover,
-                            errorBuilder: (_, __, ___) => Container(color: Colors.grey[200], child: const Icon(Icons.broken_image))))
-                    : Container(color: Colors.grey[200], child: const Icon(Icons.image)),
+                        child: Image.network(_infoImageUrlController.text,
+                            fit: BoxFit.cover,
+                            errorBuilder: (_, __, ___) => Container(
+                                color: Colors.grey[200],
+                                child: const Icon(Icons.broken_image))),
+                      )
+                    : Container(
+                        color: Colors.grey[200], child: const Icon(Icons.image)),
               ),
             ),
             const SizedBox(width: 16),
             Expanded(
               child: TextFormField(
                 controller: _infoImageUrlController,
-                decoration: const InputDecoration(labelText: 'URL фото', border: OutlineInputBorder()),
+                decoration: const InputDecoration(
+                    labelText: 'URL фото', border: OutlineInputBorder()),
               ),
             ),
             IconButton(
@@ -669,16 +746,18 @@ class _StoreScreenState extends State<StoreScreen> {
             Expanded(
               child: TextFormField(
                 controller: _mapXController,
-                decoration: const InputDecoration(labelText: 'X (0.0 - 1.0)', border: OutlineInputBorder()),
-                keyboardType: TextInputType.numberWithOptions(decimal: true),
+                decoration: const InputDecoration(
+                    labelText: 'X (0.0 - 1.0)', border: OutlineInputBorder()),
+                keyboardType: const TextInputType.numberWithOptions(decimal: true),
               ),
             ),
             const SizedBox(width: 12),
             Expanded(
               child: TextFormField(
                 controller: _mapYController,
-                decoration: const InputDecoration(labelText: 'Y (0.0 - 1.0)', border: OutlineInputBorder()),
-                keyboardType: TextInputType.numberWithOptions(decimal: true),
+                decoration: const InputDecoration(
+                    labelText: 'Y (0.0 - 1.0)', border: OutlineInputBorder()),
+                keyboardType: const TextInputType.numberWithOptions(decimal: true),
               ),
             ),
           ],
@@ -689,16 +768,18 @@ class _StoreScreenState extends State<StoreScreen> {
             Expanded(
               child: TextFormField(
                 controller: _mapWidthController,
-                decoration: const InputDecoration(labelText: 'Ширина', border: OutlineInputBorder()),
-                keyboardType: TextInputType.numberWithOptions(decimal: true),
+                decoration: const InputDecoration(
+                    labelText: 'Ширина', border: OutlineInputBorder()),
+                keyboardType: const TextInputType.numberWithOptions(decimal: true),
               ),
             ),
             const SizedBox(width: 12),
             Expanded(
               child: TextFormField(
                 controller: _mapHeightController,
-                decoration: const InputDecoration(labelText: 'Высота', border: OutlineInputBorder()),
-                keyboardType: TextInputType.numberWithOptions(decimal: true),
+                decoration: const InputDecoration(
+                    labelText: 'Высота', border: OutlineInputBorder()),
+                keyboardType: const TextInputType.numberWithOptions(decimal: true),
               ),
             ),
           ],
@@ -872,7 +953,8 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
               ),
               Positioned.fill(
                 child: CustomPaint(
-                  painter: _OverlayPainter(frameRect: Rect.fromLTWH(frameLeft, frameTop, frameW, frameH)),
+                  painter: _OverlayPainter(
+                      frameRect: Rect.fromLTWH(frameLeft, frameTop, frameW, frameH)),
                 ),
               ),
               Positioned(
@@ -975,7 +1057,6 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
   }
 }
 
-// Рисовальщик пунктирной рамки
 class _DashedBorderPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
@@ -1001,7 +1082,6 @@ class _DashedBorderPainter extends CustomPainter {
   bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }
 
-// Затемнение вне рамки
 class _OverlayPainter extends CustomPainter {
   final Rect frameRect;
   _OverlayPainter({required this.frameRect});
@@ -1017,5 +1097,6 @@ class _OverlayPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(covariant _OverlayPainter oldDelegate) => oldDelegate.frameRect != frameRect;
+  bool shouldRepaint(covariant _OverlayPainter oldDelegate) =>
+      oldDelegate.frameRect != frameRect;
 }

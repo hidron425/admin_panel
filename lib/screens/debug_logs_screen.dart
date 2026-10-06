@@ -1,26 +1,63 @@
 import 'package:flutter/material.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:supabase_flutter/supabase_flutter.dart' as supa;
 import 'package:intl/intl.dart';
 import 'package:flutter/services.dart';
 
-class DebugLogsScreen extends StatelessWidget {
+class DebugLogsScreen extends StatefulWidget {
   const DebugLogsScreen({super.key});
 
+  @override
+  State<DebugLogsScreen> createState() => _DebugLogsScreenState();
+}
+
+class _DebugLogsScreenState extends State<DebugLogsScreen> {
+  supa.SupabaseClient get _sb => supa.Supabase.instance.client;
+
+  List<Map<String, dynamic>> _logs = [];
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadLogs();
+  }
+
+  Future<void> _loadLogs() async {
+    try {
+      final data = await _sb
+          .from('debug_fork_logs')
+          .select()
+          .order('created_at', ascending: true);
+      if (mounted) {
+        setState(() {
+          _logs = (data as List).map((j) => Map<String, dynamic>.from(j)).toList();
+          _loading = false;
+        });
+      }
+    } catch (e) {
+      debugPrint('❌ _loadLogs: $e');
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
   String _formatLog(Map<String, dynamic> data) {
-    final timestamp = (data['timestamp'] as Timestamp?)?.toDate();
-    final dateStr = timestamp != null
-        ? DateFormat('yyyy-MM-dd HH:mm:ss').format(timestamp)
-        : '—';
-    final currentShop = data['currentShopName'] ?? data['currentShopId'] ?? '—';
-    final candidateShops = (data['candidateShops'] as List<dynamic>? ?? [])
-        .map((e) => e is Map<String, dynamic>
-            ? '${e['name']} (id=${e['shopId']}, priority=${e['priority']}, fav=${e['isFavorite']})'
+    final tsRaw = data['created_at'] as String?;
+    final ts = tsRaw != null ? DateTime.tryParse(tsRaw) : null;
+    final dateStr = ts != null ? DateFormat('yyyy-MM-dd HH:mm:ss').format(ts) : '—';
+    final currentShop = data['current_shop_name'] ?? data['current_shop_id'] ?? '—';
+
+    final candidateShops = (data['candidate_shops'] as List<dynamic>? ?? [])
+        .map((e) => e is Map
+            ? '${e['name']} (id=${e['shop_id']}, priority=${e['priority']}, fav=${e['is_favorite']})'
             : e.toString())
         .join('; ');
-    final selectedShops = (data['selectedShops'] as List<dynamic>? ?? [])
+
+    final selectedShops = (data['selected_shops'] as List<dynamic>? ?? [])
         .map((e) => e.toString())
         .join(', ');
-    final collabShop = data['collabShopName'] ?? '';
+
+    final collabShop = data['collab_shop_name'] ?? '';
+
     return '''
 Время: $dateStr
 Текущий магазин: $currentShop
@@ -32,18 +69,16 @@ class DebugLogsScreen extends StatelessWidget {
   }
 
   Future<void> _copyAllLogs() async {
-    final snapshot = await FirebaseFirestore.instance
-        .collection('debug_fork_logs')
-        .orderBy('timestamp', descending: false)
-        .get();
-
     final buffer = StringBuffer();
-    for (final doc in snapshot.docs) {
-      final data = doc.data() as Map<String, dynamic>;
-      buffer.write(_formatLog(data));
+    for (final log in _logs) {
+      buffer.write(_formatLog(log));
     }
-
     await Clipboard.setData(ClipboardData(text: buffer.toString()));
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Логи скопированы')),
+      );
+    }
   }
 
   @override
@@ -57,37 +92,21 @@ class DebugLogsScreen extends StatelessWidget {
             tooltip: 'Скопировать все логи',
             onPressed: _copyAllLogs,
           ),
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            tooltip: 'Обновить',
+            onPressed: _loadLogs,
+          ),
         ],
       ),
-      body: StreamBuilder<QuerySnapshot>(
-        stream: FirebaseFirestore.instance
-            .collection('debug_fork_logs')
-            .orderBy('timestamp', descending: false)
-            .snapshots(),
-        builder: (context, snapshot) {
-          if (snapshot.hasError) {
-            return Center(child: Text('Ошибка: ${snapshot.error}'));
-          }
-          if (snapshot.connectionState == ConnectionState.waiting) {
-            return const Center(child: CircularProgressIndicator());
-          }
-
-          final docs = snapshot.data!.docs;
-          if (docs.isEmpty) {
-            return const Center(child: Text('Логов пока нет'));
-          }
-
-          final allText = docs.map((doc) {
-            final data = doc.data() as Map<String, dynamic>;
-            return _formatLog(data);
-          }).join('\n');
-
-          return SingleChildScrollView(
-            padding: const EdgeInsets.all(16),
-            child: SelectableText(allText),
-          );
-        },
-      ),
+      body: _loading
+          ? const Center(child: CircularProgressIndicator())
+          : _logs.isEmpty
+              ? const Center(child: Text('Логов пока нет'))
+              : SingleChildScrollView(
+                  padding: const EdgeInsets.all(16),
+                  child: SelectableText(_logs.map(_formatLog).join('\n')),
+                ),
     );
   }
 }

@@ -1,9 +1,8 @@
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:supabase_flutter/supabase_flutter.dart' as supa;
 import 'package:intl/intl.dart';
 import 'package:admin_panel/utils/audit.dart';
-import 'package:admin_panel/utils/app_state.dart';   // 🆕 глобальное состояние
+import 'package:admin_panel/utils/app_state.dart';
 
 class UserManagementScreen extends StatefulWidget {
   const UserManagementScreen({super.key});
@@ -15,16 +14,17 @@ class UserManagementScreen extends StatefulWidget {
 class _UserManagementScreenState extends State<UserManagementScreen>
     with SingleTickerProviderStateMixin {
   late TabController _tabController;
-  final _firestore = FirebaseFirestore.instance;
+  supa.SupabaseClient get _sb => supa.Supabase.instance.client;
+
   final _searchController = TextEditingController();
   String _searchQuery = '';
-  String? _selectedMallId;   // 🆕 текущий выбранный ТЦ
+  String? _selectedMallId;
 
-  // Для вкладки «Действия»
   String? _selectedUserId;
+  String? _selectedUserEmail;
+  bool _isBlocked = false;
   final _bonusDescriptionController = TextEditingController();
   final _bonusValueController = TextEditingController();
-  bool _isBlocked = false;
 
   @override
   void initState() {
@@ -53,15 +53,6 @@ class _UserManagementScreenState extends State<UserManagementScreen>
     }
   }
 
-  // 🆕 Поток с фильтром по ТЦ
-  Stream<QuerySnapshot> _getUsersStream() {
-    Query query = _firestore.collection('user_progress');
-    if (_selectedMallId != null) {
-      query = query.where('selectedMallId', isEqualTo: _selectedMallId);
-    }
-    return query.snapshots();
-  }
-
   // ---------- Вкладка «Пользователи» ----------
   Widget _buildUsersTab() {
     return Column(
@@ -86,52 +77,67 @@ class _UserManagementScreenState extends State<UserManagementScreen>
           ),
         ),
         Expanded(
-          child: StreamBuilder<QuerySnapshot>(
+          child: StreamBuilder<List<Map<String, dynamic>>>(
             stream: _getUsersStream(),
             builder: (context, snapshot) {
               if (snapshot.hasError) {
                 return Center(child: Text('Ошибка: ${snapshot.error}'));
               }
-              if (snapshot.connectionState == ConnectionState.waiting) {
+              if (!snapshot.hasData) {
                 return const Center(child: CircularProgressIndicator());
               }
-              final docs = snapshot.data!.docs.where((doc) {
+              final allUsers = snapshot.data!;
+              final filtered = allUsers.where((user) {
                 if (_searchQuery.isEmpty) return true;
-                final email = (doc.data() as Map<String, dynamic>)['email'] as String? ?? '';
-                return email.toLowerCase().contains(_searchQuery);
+                final email = (user['email'] as String?)?.toLowerCase() ?? '';
+                return email.contains(_searchQuery);
               }).toList();
 
-              if (docs.isEmpty) {
+              if (filtered.isEmpty) {
                 return const Center(child: Text('Нет пользователей'));
               }
 
               return ListView.builder(
-                itemCount: docs.length,
+                itemCount: filtered.length,
                 itemBuilder: (context, index) {
-                  final data = docs[index].data() as Map<String, dynamic>;
+                  final data = filtered[index];
+                  final userId = data['user_id'] as String? ?? '';
                   final email = data['email'] as String? ?? 'Нет email';
-                  final userId = docs[index].id;
-                  final completedSteps = data['completedSteps'] ?? 0;
-                  final cycleCount = data['cycleCount'] ?? 0;
-                  final lastActive = (data['lastActive'] as Timestamp?)?.toDate();
+                  final completedSteps = (data['completed_steps'] as num?)?.toInt() ?? 0;
+                  final cycleCount = (data['cycle_count'] as num?)?.toInt() ?? 0;
+                  final lastActiveRaw = data['last_active'] as String?;
+                  final lastActive = lastActiveRaw != null
+                      ? DateTime.tryParse(lastActiveRaw)
+                      : null;
                   final blocked = data['blocked'] == true;
-                  final userMallId = data['selectedMallId'] as String? ?? '—';
+                  final userMallId = data['selected_mall_id'] as String? ?? '—';
 
                   return Card(
                     margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
                     child: ListTile(
-                      title: Text(email, style: TextStyle(fontWeight: FontWeight.bold, color: blocked ? Colors.red : null)),
+                      title: Text(
+                        email,
+                        style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          color: blocked ? Colors.red : null,
+                        ),
+                      ),
                       subtitle: Text(
                         'Шагов: $completedSteps | Циклов: $cycleCount\n'
                         'Активен: ${lastActive != null ? DateFormat('dd.MM.yyyy HH:mm').format(lastActive) : 'никогда'}\n'
                         'ТЦ: $userMallId',
                       ),
                       trailing: blocked
-                          ? const Chip(label: Text('Заблокирован', style: TextStyle(color: Colors.white)), backgroundColor: Colors.red)
+                          ? const Chip(
+                              label: Text('Заблокирован',
+                                  style: TextStyle(color: Colors.white)),
+                              backgroundColor: Colors.red,
+                            )
                           : null,
                       onTap: () {
                         setState(() {
                           _selectedUserId = userId;
+                          _selectedUserEmail = email;
                           _isBlocked = blocked;
                           _bonusDescriptionController.clear();
                           _bonusValueController.clear();
@@ -149,7 +155,22 @@ class _UserManagementScreenState extends State<UserManagementScreen>
     );
   }
 
-  // ---------- Вкладка «Действия» (без изменений) ----------
+  Stream<List<Map<String, dynamic>>> _getUsersStream() {
+    // Supabase stream требует включённого Realtime на таблице user_progress
+    if (_selectedMallId != null) {
+      return _sb
+          .from('user_progress')
+          .stream(primaryKey: ['user_id'])
+          .eq('selected_mall_id', _selectedMallId!)
+          .map((rows) => rows.map((r) => Map<String, dynamic>.from(r)).toList());
+    }
+    return _sb
+        .from('user_progress')
+        .stream(primaryKey: ['user_id'])
+        .map((rows) => rows.map((r) => Map<String, dynamic>.from(r)).toList());
+  }
+
+  // ---------- Вкладка «Действия» ----------
   Widget _buildActionsTab() {
     if (_selectedUserId == null) {
       return const Center(
@@ -162,8 +183,10 @@ class _UserManagementScreenState extends State<UserManagementScreen>
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('Выбран пользователь: $_selectedUserId',
-              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+          Text(
+            'Выбран пользователь: ${_selectedUserEmail ?? _selectedUserId}',
+            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+          ),
           const SizedBox(height: 16),
 
           // Блокировка / разблокировка
@@ -196,7 +219,8 @@ class _UserManagementScreenState extends State<UserManagementScreen>
           const Divider(height: 32),
 
           // Выдача бонуса
-          const Text('Выдать бонус пользователю', style: TextStyle(fontWeight: FontWeight.bold)),
+          const Text('Выдать бонус пользователю',
+              style: TextStyle(fontWeight: FontWeight.bold)),
           const SizedBox(height: 8),
           TextField(
             controller: _bonusDescriptionController,
@@ -242,21 +266,31 @@ class _UserManagementScreenState extends State<UserManagementScreen>
     );
   }
 
-  // ---------- Бизнес-логика (без изменений, кроме уже существующего аудита) ----------
+  // ---------- Бизнес-логика ----------
   Future<void> _toggleBlock(String userId, bool block) async {
-    final action = block ? 'block' : 'unblock';
-    await _firestore.collection('user_progress').doc(userId).update({'blocked': block});
-    AuditLogger.log(
-      action: action,
-      collection: 'user_progress',
-      docId: userId,
-      changes: {'blocked': block},
-    );
-    setState(() => _isBlocked = block);
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(block ? 'Пользователь заблокирован' : 'Блокировка снята')),
+    try {
+      await _sb
+          .from('user_progress')
+          .update({'blocked': block}).eq('user_id', userId);
+      AuditLogger.log(
+        action: block ? 'block' : 'unblock',
+        collection: 'user_progress',
+        docId: userId,
+        changes: {'blocked': block},
       );
+      if (mounted) {
+        setState(() => _isBlocked = block);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(block ? 'Пользователь заблокирован' : 'Блокировка снята')),
+        );
+      }
+    } catch (e) {
+      debugPrint('❌ _toggleBlock: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Ошибка: $e')),
+        );
+      }
     }
   }
 
@@ -268,57 +302,93 @@ class _UserManagementScreenState extends State<UserManagementScreen>
         content: const Text('Все данные о прохождении квеста будут удалены.'),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Отмена')),
-          TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Сбросить', style: TextStyle(color: Colors.red))),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Сбросить', style: TextStyle(color: Colors.red)),
+          ),
         ],
       ),
     );
     if (confirm != true) return;
 
-    await _firestore.collection('user_progress').doc(userId).update({
-      'completedSteps': 0,
-      'usedShopIds': [],
-      'pendingForkShops': [],
-      'lastShopId': null,
-      'isPathActive': false,
-      'cycleCount': 0,
-    });
-    AuditLogger.log(
-      action: 'reset_progress',
-      collection: 'user_progress',
-      docId: userId,
-      changes: {'completedSteps': 0, 'cycleCount': 0},
-    );
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Прогресс сброшен')),
+    try {
+      await _sb.from('user_progress').update({
+        'completed_steps': 0,
+        'used_shop_ids': <String>[],
+        'pending_fork_shops': <String>[],
+        'last_shop_id': null,
+        'is_path_active': false,
+        'cycle_count': 0,
+      }).eq('user_id', userId);
+      AuditLogger.log(
+        action: 'reset_progress',
+        collection: 'user_progress',
+        docId: userId,
+        changes: {'completed_steps': 0, 'cycle_count': 0},
       );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Прогресс сброшен')),
+        );
+      }
+    } catch (e) {
+      debugPrint('❌ _resetProgress: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Ошибка: $e')),
+        );
+      }
     }
   }
 
   Future<void> _issueBonus(String userId) async {
-    final bonusData = {
-      'title': _bonusDescriptionController.text.trim(),
-      'message': _bonusDescriptionController.text.trim(),
-      'icon': '🎁',
-      'value': int.tryParse(_bonusValueController.text) ?? 0,
-      'issuedBy': FirebaseAuth.instance.currentUser?.email ?? 'admin',
-      'timestamp': FieldValue.serverTimestamp(),
-    };
-    await _firestore.collection('user_progress').doc(userId).update({
-      'pendingBonuses': FieldValue.arrayUnion([bonusData]),
-    });
-    AuditLogger.log(
-      action: 'issue_bonus',
-      collection: 'user_progress',
-      docId: userId,
-      changes: bonusData,
-    );
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Бонус выдан')),
+    try {
+      // Читаем текущий массив pending_bonuses
+      final data = await _sb
+          .from('user_progress')
+          .select('pending_bonuses')
+          .eq('user_id', userId)
+          .maybeSingle();
+      if (data == null) return;
+
+      final pending = List<dynamic>.from(data['pending_bonuses'] ?? []);
+      pending.add({
+        'title': _bonusDescriptionController.text.trim(),
+        'message': _bonusDescriptionController.text.trim(),
+        'icon': '🎁',
+        'value': int.tryParse(_bonusValueController.text) ?? 0,
+        'issuedBy': _sb.auth.currentUser?.email ?? 'admin',
+        'timestamp': DateTime.now().toIso8601String(),
+      });
+
+      await _sb.from('user_progress').update({
+        'pending_bonuses': pending,
+      }).eq('user_id', userId);
+
+      AuditLogger.log(
+        action: 'issue_bonus',
+        collection: 'user_progress',
+        docId: userId,
+        changes: {
+          'title': _bonusDescriptionController.text.trim(),
+          'value': _bonusValueController.text.trim(),
+        },
       );
-      _bonusDescriptionController.clear();
-      _bonusValueController.clear();
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Бонус выдан')),
+        );
+        _bonusDescriptionController.clear();
+        _bonusValueController.clear();
+      }
+    } catch (e) {
+      debugPrint('❌ _issueBonus: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Ошибка: $e')),
+        );
+      }
     }
   }
 

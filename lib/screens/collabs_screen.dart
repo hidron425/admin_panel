@@ -1,9 +1,7 @@
 import 'package:flutter/material.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:cloud_functions/cloud_functions.dart';
-import 'package:firebase_auth/firebase_auth.dart';
+import 'package:supabase_flutter/supabase_flutter.dart' as supa;
 import 'package:admin_panel/utils/audit.dart';
-import 'package:admin_panel/utils/app_state.dart';   // 🆕 глобальное состояние
+import 'package:admin_panel/utils/app_state.dart';
 
 class CollabsScreen extends StatefulWidget {
   const CollabsScreen({Key? key}) : super(key: key);
@@ -15,11 +13,17 @@ class CollabsScreen extends StatefulWidget {
 class _CollabsScreenState extends State<CollabsScreen>
     with SingleTickerProviderStateMixin {
   late TabController _tabController;
-  final _firestore = FirebaseFirestore.instance;
-  final _functions = FirebaseFunctions.instance;
+  supa.SupabaseClient get _sb => supa.Supabase.instance.client;
+
   String? _currentShopId;
-  String? _selectedMallId;   // 🆕 текущий выбранный ТЦ
-  List<String> _mallShopIds = []; // 🆕 ID магазинов выбранного ТЦ (для фильтрации)
+  String? _selectedMallId;
+  List<String> _mallShopIds = [];
+
+  List<Map<String, dynamic>> _activeCollabs = [];
+  List<Map<String, dynamic>> _suggestions = [];
+  List<Map<String, dynamic>> _offers = [];
+  Set<String> _acceptedOfferIds = {};
+  bool _loading = true;
 
   @override
   void initState() {
@@ -27,8 +31,7 @@ class _CollabsScreenState extends State<CollabsScreen>
     _tabController = TabController(length: 3, vsync: this);
     _selectedMallId = AppState.selectedMallId.value;
     AppState.selectedMallId.addListener(_onMallChanged);
-    _getCurrentShopId();
-    _loadMallShops(); // загружаем ID магазинов ТЦ
+    _init();
   }
 
   @override
@@ -42,50 +45,122 @@ class _CollabsScreenState extends State<CollabsScreen>
     if (_selectedMallId != AppState.selectedMallId.value) {
       setState(() {
         _selectedMallId = AppState.selectedMallId.value;
-        _mallShopIds = []; // сбросим, чтобы перезагрузить
+        _mallShopIds = [];
       });
-      _loadMallShops();
+      _init();
+    }
+  }
+
+  Future<void> _init() async {
+    await _loadCurrentShopId();
+    await _loadMallShops();
+    await _loadAllData();
+  }
+
+  Future<void> _loadCurrentShopId() async {
+    try {
+      final email = supa.Supabase.instance.client.auth.currentUser?.email;
+      if (email != null) {
+        final data = await _sb
+            .from('user_metadata')
+            .select('store_id')
+            .eq('email', email)
+            .maybeSingle();
+        if (mounted) {
+          setState(() => _currentShopId = data?['store_id'] as String?);
+        }
+      }
+    } catch (e) {
+      debugPrint('❌ _loadCurrentShopId: $e');
     }
   }
 
   Future<void> _loadMallShops() async {
     if (_selectedMallId == null) {
-      setState(() => _mallShopIds = []);
+      if (mounted) setState(() => _mallShopIds = []);
       return;
     }
-    final snap = await _firestore
-        .collection('shops')
-        .where('mallId', isEqualTo: _selectedMallId)
-        .get();
-    setState(() {
-      _mallShopIds = snap.docs.map((doc) => doc.id).toList();
-    });
-  }
-
-  Future<void> _getCurrentShopId() async {
-    final user = FirebaseAuth.instance.currentUser;
-    if (user != null && user.email != null) {
-      final doc = await _firestore.collection('users').doc(user.email!).get();
+    try {
+      final data = await _sb
+          .from('shops')
+          .select('firestore_id')
+          .eq('mall_id', _selectedMallId!);
       if (mounted) {
         setState(() {
-          _currentShopId = doc.data()?['storeId'] as String?;
+          _mallShopIds = (data as List)
+              .map((j) => j['firestore_id'] as String)
+              .toList();
         });
       }
+    } catch (e) {
+      debugPrint('❌ _loadMallShops: $e');
     }
   }
 
-  // 🆕 Фильтрация документов по принадлежности к выбранному ТЦ
+  Future<void> _loadAllData() async {
+    setState(() => _loading = true);
+    try {
+      final active = await _sb.from('active_collabs').select();
+      final suggested = await _sb
+          .from('suggested_collabs')
+          .select()
+          .eq('status', 'pending');
+      final offers = await _sb
+          .from('auction_offers')
+          .select()
+          .eq('status', 'active')
+          .order('created_at', ascending: false);
+
+      Set<String> accepted = {};
+      if (_currentShopId != null) {
+        final myCollabs = await _sb
+            .from('active_collabs')
+            .select('offer_id')
+            .eq('from_shop_id', _currentShopId!);
+        accepted = (myCollabs as List)
+            .map((j) => j['offer_id']?.toString())
+            .where((id) => id != null)
+            .cast<String>()
+            .toSet();
+      }
+
+      if (mounted) {
+        setState(() {
+          _activeCollabs = (active as List)
+              .map((j) => Map<String, dynamic>.from(j))
+              .where(_belongsToSelectedMall)
+              .toList();
+          _suggestions = (suggested as List)
+              .map((j) => Map<String, dynamic>.from(j))
+              .where(_belongsToSelectedMall)
+              .toList();
+          _offers = (offers as List)
+              .map((j) => Map<String, dynamic>.from(j))
+              .where((o) {
+                if (_selectedMallId == null) return true;
+                final shopId = o['shop_id'] as String? ?? '';
+                return _mallShopIds.contains(shopId);
+              })
+              .toList();
+          _acceptedOfferIds = accepted;
+          _loading = false;
+        });
+      }
+    } catch (e) {
+      debugPrint('❌ _loadAllData: $e');
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
   bool _belongsToSelectedMall(Map<String, dynamic> data) {
-    if (_selectedMallId == null) return true; // все ТЦ
-    final fromId = data['fromShopId'] as String? ?? '';
-    final toId = data['toShopId'] as String? ?? '';
+    if (_selectedMallId == null) return true;
+    final fromId = data['from_shop_id'] as String? ?? '';
+    final toId = data['to_shop_id'] as String? ?? '';
     return _mallShopIds.contains(fromId) || _mallShopIds.contains(toId);
   }
 
   @override
   Widget build(BuildContext context) {
-    // Если выбран ТЦ, но магазин текущего пользователя не привязан, не блокируем экран полностью,
-    // а просто скрываем кнопку создания оферты.
     return Scaffold(
       appBar: AppBar(
         title: Text(_selectedMallId == null
@@ -100,63 +175,53 @@ class _CollabsScreenState extends State<CollabsScreen>
           ],
         ),
       ),
-      body: TabBarView(
-        controller: _tabController,
-        children: [
-          _buildActiveCollabsTab(),
-          _buildSuggestionsTab(),
-          _buildOpenMarketTab(),
-        ],
-      ),
+      body: _loading
+          ? const Center(child: CircularProgressIndicator())
+          : TabBarView(
+              controller: _tabController,
+              children: [
+                _buildActiveCollabsTab(),
+                _buildSuggestionsTab(),
+                _buildOpenMarketTab(),
+              ],
+            ),
       floatingActionButton: _currentShopId != null
           ? FloatingActionButton(
               onPressed: () => _showCreateOfferDialog(),
-              child: const Icon(Icons.add),
               tooltip: 'Создать оферту',
+              child: const Icon(Icons.add),
             )
-          : null, // для агрегатора скрываем
+          : null,
     );
   }
 
-  // ==================== ВКЛАДКА 1: АКТИВНЫЕ КОЛЛАБОРАЦИИ ====================
   Widget _buildActiveCollabsTab() {
-    return StreamBuilder<QuerySnapshot>(
-      stream: _firestore.collection('active_collabs').snapshots(),
-      builder: (context, snapshot) {
-        if (snapshot.hasError) return Center(child: Text('Ошибка: ${snapshot.error}'));
-        if (snapshot.connectionState == ConnectionState.waiting) return const Center(child: CircularProgressIndicator());
-
-        final docs = snapshot.data!.docs.where((doc) {
-          final data = doc.data() as Map<String, dynamic>;
-          return _belongsToSelectedMall(data);
-        }).toList();
-
-        if (docs.isEmpty) return const Center(child: Text('Нет активных коллабораций'));
-
-        return ListView.builder(
-          itemCount: docs.length,
-          itemBuilder: (context, index) {
-            final doc = docs[index];
-            final data = doc.data() as Map<String, dynamic>;
-            final fromId = data['fromShopId'] ?? '';
-            final toId = data['toShopId'] ?? '';
-            final expires = (data['expires'] as Timestamp?)?.toDate();
-            final clicks = data['clicks'] ?? 0;
-            final bid = data['bid'] ?? 0;
-            return Card(
-              margin: const EdgeInsets.all(8),
-              child: ListTile(
-                title: Text('$fromId → $toId'),
-                subtitle: Text('Ставка: $bid руб./переход | Истекает: ${expires?.toLocal().toString().split(' ')[0] ?? 'нет'} | Переходов: $clicks'),
-                trailing: (fromId == _currentShopId || toId == _currentShopId)
-                    ? IconButton(
-                        icon: const Icon(Icons.delete, color: Colors.red),
-                        onPressed: () => _deleteActiveCollab(doc.id),
-                      )
-                    : null,
-              ),
-            );
-          },
+    if (_activeCollabs.isEmpty) {
+      return const Center(child: Text('Нет активных коллабораций'));
+    }
+    return ListView.builder(
+      itemCount: _activeCollabs.length,
+      itemBuilder: (context, index) {
+        final data = _activeCollabs[index];
+        final fromId = data['from_shop_id'] ?? '';
+        final toId = data['to_shop_id'] ?? '';
+        final expiresRaw = data['expires'] as String?;
+        final expires = expiresRaw != null ? DateTime.tryParse(expiresRaw) : null;
+        final clicks = data['clicks'] ?? 0;
+        final bid = data['bid'] ?? 0;
+        return Card(
+          margin: const EdgeInsets.all(8),
+          child: ListTile(
+            title: Text('$fromId → $toId'),
+            subtitle: Text(
+                'Ставка: $bid руб./переход | Истекает: ${expires?.toLocal().toString().split(' ')[0] ?? 'нет'} | Переходов: $clicks'),
+            trailing: (fromId == _currentShopId || toId == _currentShopId)
+                ? IconButton(
+                    icon: const Icon(Icons.delete, color: Colors.red),
+                    onPressed: () => _deleteActiveCollab(data['id'].toString()),
+                  )
+                : null,
+          ),
         );
       },
     );
@@ -165,61 +230,46 @@ class _CollabsScreenState extends State<CollabsScreen>
   Future<void> _deleteActiveCollab(String docId) async {
     final confirm = await showDialog<bool>(
       context: context,
-      builder: (context) => AlertDialog(
+      builder: (ctx) => AlertDialog(
         title: const Text('Удалить коллаборацию?'),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Нет')),
-          TextButton(onPressed: () => Navigator.pop(context, true), child: const Text('Да')),
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Нет')),
+          TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Да')),
         ],
       ),
     );
     if (confirm == true) {
-      await _firestore.collection('active_collabs').doc(docId).delete();
-      AuditLogger.log(
-        action: 'delete',
-        collection: 'active_collabs',
-        docId: docId,
-      );
+      try {
+        await _sb.from('active_collabs').delete().eq('id', docId);
+        AuditLogger.log(action: 'delete', collection: 'active_collabs', docId: docId);
+        _loadAllData();
+      } catch (e) {
+        debugPrint('❌ _deleteActiveCollab: $e');
+      }
     }
   }
 
-  // ==================== ВКЛАДКА 2: ПРЕДЛОЖЕНИЯ (АВТО) ====================
   Widget _buildSuggestionsTab() {
-    return StreamBuilder<QuerySnapshot>(
-      stream: _firestore.collection('suggested_collabs')
-          .where('status', isEqualTo: 'pending')
-          .snapshots(),
-      builder: (context, snapshot) {
-        if (snapshot.hasError) return Center(child: Text('Ошибка: ${snapshot.error}'));
-        if (snapshot.connectionState == ConnectionState.waiting) return const Center(child: CircularProgressIndicator());
-
-        final docs = snapshot.data!.docs.where((doc) {
-          final data = doc.data() as Map<String, dynamic>;
-          return _belongsToSelectedMall(data);
-        }).toList();
-
-        if (docs.isEmpty) return const Center(child: Text('Нет новых предложений'));
-
-        return ListView.builder(
-          itemCount: docs.length,
-          itemBuilder: (context, index) {
-            final doc = docs[index];
-            final data = doc.data() as Map<String, dynamic>;
-            final fromId = data['fromShopId'] ?? '';
-            final toId = data['toShopId'] ?? '';
-            final rate = data['rate'] ?? 0;
-            return Card(
-              margin: const EdgeInsets.all(8),
-              child: ListTile(
-                title: Text('$fromId → $toId'),
-                subtitle: Text('Частота: $rate переходов за 30 дней'),
-                trailing: ElevatedButton(
-                  onPressed: () => _acceptSuggestion(doc.id, fromId, toId),
-                  child: const Text('Принять'),
-                ),
-              ),
-            );
-          },
+    if (_suggestions.isEmpty) {
+      return const Center(child: Text('Нет новых предложений'));
+    }
+    return ListView.builder(
+      itemCount: _suggestions.length,
+      itemBuilder: (context, index) {
+        final data = _suggestions[index];
+        final fromId = data['from_shop_id'] ?? '';
+        final toId = data['to_shop_id'] ?? '';
+        final rate = data['rate'] ?? 0;
+        return Card(
+          margin: const EdgeInsets.all(8),
+          child: ListTile(
+            title: Text('$fromId → $toId'),
+            subtitle: Text('Частота: $rate переходов за 30 дней'),
+            trailing: ElevatedButton(
+              onPressed: () => _acceptSuggestion(data['id'].toString(), fromId, toId),
+              child: const Text('Принять'),
+            ),
+          ),
         );
       },
     );
@@ -227,114 +277,91 @@ class _CollabsScreenState extends State<CollabsScreen>
 
   Future<void> _acceptSuggestion(String suggestionId, String fromShopId, String toShopId) async {
     try {
-      final callable = _functions.httpsCallable('acceptCollabSuggestion');
-      await callable.call({
-        'suggestionId': suggestionId,
-        'fromShopId': fromShopId,
-        'toShopId': toShopId,
+      await _sb.from('active_collabs').insert({
+        'from_shop_id': fromShopId,
+        'to_shop_id': toShopId,
+        'expires': DateTime.now().add(const Duration(days: 90)).toIso8601String(),
+        'clicks': 0,
+        'type': 'auto_suggestion',
+        'created_at': DateTime.now().toIso8601String(),
       });
+      await _sb.from('suggested_collabs').update({'status': 'accepted'}).eq('id', suggestionId);
       AuditLogger.log(
         action: 'accept_suggestion',
         collection: 'suggested_collabs',
         docId: suggestionId,
-        changes: {'fromShopId': fromShopId, 'toShopId': toShopId},
+        changes: {'from_shop_id': fromShopId, 'to_shop_id': toShopId},
       );
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Коллаборация активирована')));
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Коллаборация активирована')));
+      }
+      _loadAllData();
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Ошибка: $e')));
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Ошибка: $e')));
+      }
     }
   }
 
-  // ==================== ВКЛАДКА 3: АУКЦИОН (ОФЕРТЫ) ====================
   Widget _buildOpenMarketTab() {
-    return StreamBuilder<QuerySnapshot>(
-      stream: _firestore.collection('auction_offers')
-          .where('status', isEqualTo: 'active')
-          .orderBy('createdAt', descending: true)
-          .snapshots(),
-      builder: (context, snapshot) {
-        if (snapshot.hasError) return Center(child: Text('Ошибка: ${snapshot.error}'));
-        if (snapshot.connectionState == ConnectionState.waiting) return const Center(child: CircularProgressIndicator());
+    if (_offers.isEmpty) {
+      return const Center(child: Text('Нет активных оферт'));
+    }
+    return ListView.builder(
+      itemCount: _offers.length,
+      itemBuilder: (context, index) {
+        final data = _offers[index];
+        final offerId = data['id'].toString();
+        final targetShopId = data['shop_id'] ?? '';
+        final bid = data['bid'] ?? 0;
+        final budget = data['budget'] ?? 0;
+        final remaining = data['remaining_budget'] ?? budget;
+        final targetCategory = data['target_category'] ?? 'любая';
+        final expiresRaw = data['expires'] as String?;
+        final expires = expiresRaw != null ? DateTime.tryParse(expiresRaw) : null;
+        final isOwnOffer = targetShopId == _currentShopId;
+        final alreadyAccepted = _acceptedOfferIds.contains(offerId);
 
-        final docs = snapshot.data!.docs.where((doc) {
-          final data = doc.data() as Map<String, dynamic>;
-          final shopId = data['shopId'] as String? ?? '';
-          // Для оферт фильтруем по магазину-владельцу
-          if (_selectedMallId == null) return true;
-          return _mallShopIds.contains(shopId);
-        }).toList();
-
-        if (docs.isEmpty) return const Center(child: Text('Нет активных оферт'));
-
-        return FutureBuilder<QuerySnapshot>(
-          future: _firestore.collection('active_collabs')
-              .where('fromShopId', isEqualTo: _currentShopId)
-              .get(),
-          builder: (context, collabSnapshot) {
-            if (collabSnapshot.connectionState == ConnectionState.waiting) {
-              return const Center(child: CircularProgressIndicator());
-            }
-            final existingCollabs = collabSnapshot.data?.docs ?? [];
-            final Set<String> acceptedOfferIds = existingCollabs
-                .where((doc) => (doc.data() as Map<String, dynamic>)['offerId'] != null)
-                .map((doc) => (doc.data() as Map<String, dynamic>)['offerId'] as String)
-                .toSet();
-
-            return ListView.builder(
-              itemCount: docs.length,
-              itemBuilder: (context, index) {
-                final doc = docs[index];
-                final data = doc.data() as Map<String, dynamic>;
-                final targetShopId = data['shopId'] ?? '';
-                final bid = data['bid'] ?? 0;
-                final budget = data['budget'] ?? 0;
-                final remaining = data['remainingBudget'] ?? budget;
-                final targetCategory = data['targetCategory'] ?? 'любая';
-                final expires = (data['expires'] as Timestamp?)?.toDate();
-                final isOwnOffer = targetShopId == _currentShopId;
-                final alreadyAccepted = acceptedOfferIds.contains(doc.id);
-
-                return Card(
-                  margin: const EdgeInsets.all(8),
-                  child: ListTile(
-                    title: Text(
-                      isOwnOffer ? 'ВАША ОФЕРТА: Магазин $targetShopId платит $bid ₽/переход' 
-                                 : 'Магазин $targetShopId платит $bid ₽/переход',
-                      style: isOwnOffer ? const TextStyle(fontWeight: FontWeight.bold, color: Colors.blue) : null,
-                    ),
-                    subtitle: Text('Остаток: $remaining / $budget ₽ | Категория: $targetCategory | До: ${expires?.toLocal().toString().split(' ')[0] ?? 'не ограничено'}'),
-                    trailing: isOwnOffer
-                        ? Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              IconButton(
-                                icon: const Icon(Icons.edit, color: Colors.orange),
-                                onPressed: () => _editOffer(doc.id, data),
-                              ),
-                              IconButton(
-                                icon: const Icon(Icons.delete, color: Colors.red),
-                                onPressed: () => _deleteOffer(doc.id),
-                              ),
-                            ],
-                          )
-                        : alreadyAccepted
-                            ? const Chip(label: Text('Уже источник'), backgroundColor: Colors.grey)
-                            : ElevatedButton.icon(
-                                icon: const Icon(Icons.trending_up),
-                                label: const Text('Стать источником'),
-                                onPressed: () => _acceptOffer(doc.id, targetShopId, bid),
-                              ),
-                  ),
-                );
-              },
-            );
-          },
+        return Card(
+          margin: const EdgeInsets.all(8),
+          child: ListTile(
+            title: Text(
+              isOwnOffer
+                  ? 'ВАША ОФЕРТА: Магазин $targetShopId платит $bid ₽/переход'
+                  : 'Магазин $targetShopId платит $bid ₽/переход',
+              style: isOwnOffer
+                  ? const TextStyle(fontWeight: FontWeight.bold, color: Colors.blue)
+                  : null,
+            ),
+            subtitle: Text(
+                'Остаток: $remaining / $budget ₽ | Категория: $targetCategory | До: ${expires?.toLocal().toString().split(' ')[0] ?? 'не ограничено'}'),
+            trailing: isOwnOffer
+                ? Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      IconButton(
+                        icon: const Icon(Icons.edit, color: Colors.orange),
+                        onPressed: () => _editOffer(offerId, data),
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.delete, color: Colors.red),
+                        onPressed: () => _deleteOffer(offerId),
+                      ),
+                    ],
+                  )
+                : alreadyAccepted
+                    ? const Chip(label: Text('Уже источник'), backgroundColor: Colors.grey)
+                    : ElevatedButton.icon(
+                        icon: const Icon(Icons.trending_up),
+                        label: const Text('Стать источником'),
+                        onPressed: () => _acceptOffer(offerId, targetShopId, bid),
+                      ),
+          ),
         );
       },
     );
   }
 
-  // ==================== ДИАЛОГ СОЗДАНИЯ ОФЕРТЫ ====================
   Future<void> _showCreateOfferDialog() async {
     final bidCtrl = TextEditingController();
     final budgetCtrl = TextEditingController();
@@ -343,9 +370,9 @@ class _CollabsScreenState extends State<CollabsScreen>
 
     await showDialog(
       context: context,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setStateDialog) => AlertDialog(
-          title: const Text('Создать аукционную оферту (вы платите за трафик)'),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
+          title: const Text('Создать аукционную оферту'),
           content: SingleChildScrollView(
             child: Column(
               mainAxisSize: MainAxisSize.min,
@@ -366,9 +393,8 @@ class _CollabsScreenState extends State<CollabsScreen>
                 const SizedBox(height: 8),
                 TextField(
                   controller: categoryCtrl,
-                  decoration: const InputDecoration(labelText: 'Категория источника (оставьте пустым – любой)'),
+                  decoration: const InputDecoration(labelText: 'Категория источника (пусто – любая)'),
                 ),
-                const SizedBox(height: 8),
                 ListTile(
                   title: const Text('Действует до'),
                   subtitle: Text(expires.toLocal().toString().split(' ')[0]),
@@ -380,43 +406,48 @@ class _CollabsScreenState extends State<CollabsScreen>
                       firstDate: DateTime.now(),
                       lastDate: DateTime.now().add(const Duration(days: 365)),
                     );
-                    if (picked != null) setStateDialog(() => expires = picked);
+                    if (picked != null) setDialogState(() => expires = picked);
                   },
                 ),
               ],
             ),
           ),
           actions: [
-            TextButton(onPressed: () => Navigator.pop(context), child: const Text('Отмена')),
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Отмена')),
             ElevatedButton(
               onPressed: () async {
                 final bid = int.tryParse(bidCtrl.text);
                 final budget = int.tryParse(budgetCtrl.text);
                 if (bid == null || budget == null || bid <= 0 || budget <= 0) {
-                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Ставка и бюджет должны быть положительными числами')));
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Ставка и бюджет должны быть положительными')),
+                  );
                   return;
                 }
-                final data = {
-                  'shopId': _currentShopId,
+                final data = <String, dynamic>{
+                  'shop_id': _currentShopId,
                   'bid': bid,
                   'budget': budget,
-                  'remainingBudget': budget,
-                  'targetCategory': categoryCtrl.text.trim().isEmpty ? null : categoryCtrl.text.trim(),
+                  'remaining_budget': budget,
+                  'target_category': categoryCtrl.text.trim().isEmpty ? null : categoryCtrl.text.trim(),
                   'status': 'active',
-                  'expires': Timestamp.fromDate(expires),
-                  'createdAt': FieldValue.serverTimestamp(),
-                  // 🆕 Добавляем mallId из выбранного ТЦ (если есть)
-                  'mallId': _selectedMallId,
+                  'expires': expires.toIso8601String(),
+                  'created_at': DateTime.now().toIso8601String(),
+                  'mall_id': _selectedMallId,
                 };
-                final docRef = await _firestore.collection('auction_offers').add(data);
-                AuditLogger.log(
-                  action: 'create',
-                  collection: 'auction_offers',
-                  docId: docRef.id,
-                  changes: data,
-                );
-                Navigator.pop(context);
-                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Оферта создана, теперь другие магазины могут откликнуться')));
+                try {
+                  final result = await _sb.from('auction_offers').insert(data).select('id').single();
+                  AuditLogger.log(
+                    action: 'create',
+                    collection: 'auction_offers',
+                    docId: result['id'].toString(),
+                    changes: data,
+                  );
+                  if (mounted) Navigator.pop(ctx);
+                  _loadAllData();
+                } catch (e) {
+                  debugPrint('❌ create offer: $e');
+                }
               },
               child: const Text('Создать'),
             ),
@@ -426,24 +457,24 @@ class _CollabsScreenState extends State<CollabsScreen>
     );
   }
 
-  // ==================== РЕДАКТИРОВАНИЕ ОФЕРТЫ ====================
   Future<void> _editOffer(String offerId, Map<String, dynamic> current) async {
     final bidCtrl = TextEditingController(text: current['bid'].toString());
     final budgetCtrl = TextEditingController(text: current['budget'].toString());
-    final categoryCtrl = TextEditingController(text: current['targetCategory'] ?? '');
-    DateTime expires = (current['expires'] as Timestamp).toDate();
+    final categoryCtrl = TextEditingController(text: current['target_category'] ?? '');
+    final expiresRaw = current['expires'] as String?;
+    DateTime expires = expiresRaw != null ? DateTime.parse(expiresRaw) : DateTime.now().add(const Duration(days: 30));
 
     await showDialog(
       context: context,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setStateDialog) => AlertDialog(
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
           title: const Text('Редактировать оферту'),
           content: SingleChildScrollView(
             child: Column(
               children: [
                 TextField(controller: bidCtrl, decoration: const InputDecoration(labelText: 'Ставка (руб./переход)'), keyboardType: TextInputType.number),
                 TextField(controller: budgetCtrl, decoration: const InputDecoration(labelText: 'Общий бюджет (руб.)'), keyboardType: TextInputType.number),
-                TextField(controller: categoryCtrl, decoration: const InputDecoration(labelText: 'Категория источника (оставьте пустым – любой)')),
+                TextField(controller: categoryCtrl, decoration: const InputDecoration(labelText: 'Категория источника')),
                 ListTile(
                   title: const Text('Действует до'),
                   subtitle: Text(expires.toLocal().toString().split(' ')[0]),
@@ -455,38 +486,34 @@ class _CollabsScreenState extends State<CollabsScreen>
                       firstDate: DateTime.now(),
                       lastDate: DateTime.now().add(const Duration(days: 365)),
                     );
-                    if (picked != null) setStateDialog(() => expires = picked);
+                    if (picked != null) setDialogState(() => expires = picked);
                   },
                 ),
               ],
             ),
           ),
           actions: [
-            TextButton(onPressed: () => Navigator.pop(context), child: const Text('Отмена')),
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Отмена')),
             ElevatedButton(
               onPressed: () async {
                 final bid = int.tryParse(bidCtrl.text);
                 final budget = int.tryParse(budgetCtrl.text);
-                if (bid == null || budget == null || bid <= 0 || budget <= 0) {
-                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Ставка и бюджет должны быть положительными числами')));
-                  return;
-                }
+                if (bid == null || budget == null || bid <= 0 || budget <= 0) return;
                 final data = {
                   'bid': bid,
                   'budget': budget,
-                  'remainingBudget': budget,
-                  'targetCategory': categoryCtrl.text.trim().isEmpty ? null : categoryCtrl.text.trim(),
-                  'expires': Timestamp.fromDate(expires),
+                  'remaining_budget': budget,
+                  'target_category': categoryCtrl.text.trim().isEmpty ? null : categoryCtrl.text.trim(),
+                  'expires': expires.toIso8601String(),
                 };
-                await _firestore.collection('auction_offers').doc(offerId).update(data);
-                AuditLogger.log(
-                  action: 'update',
-                  collection: 'auction_offers',
-                  docId: offerId,
-                  changes: data,
-                );
-                Navigator.pop(context);
-                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Оферта обновлена')));
+                try {
+                  await _sb.from('auction_offers').update(data).eq('id', offerId);
+                  AuditLogger.log(action: 'update', collection: 'auction_offers', docId: offerId, changes: data);
+                  if (mounted) Navigator.pop(ctx);
+                  _loadAllData();
+                } catch (e) {
+                  debugPrint('❌ edit offer: $e');
+                }
               },
               child: const Text('Сохранить'),
             ),
@@ -496,110 +523,118 @@ class _CollabsScreenState extends State<CollabsScreen>
     );
   }
 
-  // ==================== УДАЛЕНИЕ ОФЕРТЫ ====================
   Future<void> _deleteOffer(String offerId) async {
     final confirm = await showDialog<bool>(
       context: context,
-      builder: (context) => AlertDialog(
+      builder: (ctx) => AlertDialog(
         title: const Text('Удалить оферту?'),
-        content: const Text('Это действие нельзя отменить. Все связанные коллаборации останутся активными, но новые отклики будут невозможны.'),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Отмена')),
-          TextButton(onPressed: () => Navigator.pop(context, true), child: const Text('Удалить', style: TextStyle(color: Colors.red))),
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Отмена')),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Удалить', style: TextStyle(color: Colors.red)),
+          ),
         ],
       ),
     );
     if (confirm == true) {
-      await _firestore.collection('auction_offers').doc(offerId).delete();
-      AuditLogger.log(
-        action: 'delete',
-        collection: 'auction_offers',
-        docId: offerId,
-      );
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Оферта удалена')));
+      try {
+        await _sb.from('auction_offers').delete().eq('id', offerId);
+        AuditLogger.log(action: 'delete', collection: 'auction_offers', docId: offerId);
+        _loadAllData();
+      } catch (e) {
+        debugPrint('❌ delete offer: $e');
+      }
     }
   }
 
-  // ==================== ОТКЛИК НА ОФЕРТУ ====================
   Future<void> _acceptOffer(String offerId, String targetShopId, int bid) async {
-    final currentShopDoc = await _firestore.collection('shops').doc(_currentShopId).get();
-    if (!currentShopDoc.exists) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Ошибка: ваш магазин не найден')));
-      return;
-    }
-    final currentCategory = currentShopDoc.data()?['category'] as String?;
-    final offerDoc = await _firestore.collection('auction_offers').doc(offerId).get();
-    if (!offerDoc.exists) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Оферта уже не существует')));
-      return;
-    }
-    final offerData = offerDoc.data()!;
-    final requiredCategory = offerData['targetCategory'] as String?;
-    if (requiredCategory != null && requiredCategory.isNotEmpty && currentCategory != requiredCategory) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text('Ваш магазин не подходит: требуется категория "$requiredCategory", а у вас "$currentCategory"'),
-      ));
-      return;
-    }
-
-    final existingCollab = await _firestore.collection('active_collabs')
-        .where('fromShopId', isEqualTo: _currentShopId)
-        .where('offerId', isEqualTo: offerId)
-        .limit(1)
-        .get();
-    if (existingCollab.docs.isNotEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Вы уже являетесь источником по этой оферте')));
-      return;
-    }
-
-    final confirm = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Стать источником трафика?'),
-        content: Text('Вы соглашаетесь направлять посетителей в магазин $targetShopId. За каждого перешедшего вы получите $bid руб. (деньги платит целевой магазин).\n\nАктивная коллаборация будет создана автоматически. После вашего отклика оферта станет недоступной для других магазинов.'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Отмена')),
-          ElevatedButton(onPressed: () => Navigator.pop(context, true), child: const Text('Да, создать')),
-        ],
-      ),
-    );
-    if (confirm != true) return;
+    if (_currentShopId == null) return;
 
     try {
+      final currentShop = await _sb
+          .from('shops')
+          .select('category')
+          .eq('firestore_id', _currentShopId!)
+          .maybeSingle();
+      if (currentShop == null) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Ваш магазин не найден')));
+        }
+        return;
+      }
+      final currentCategory = currentShop['category'] as String?;
+
+      final offer = await _sb
+          .from('auction_offers')
+          .select()
+          .eq('id', offerId)
+          .maybeSingle();
+      if (offer == null) return;
+
+      final requiredCategory = offer['target_category'] as String?;
+      if (requiredCategory != null &&
+          requiredCategory.isNotEmpty &&
+          currentCategory != requiredCategory) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text('Требуется категория "$requiredCategory", у вас "$currentCategory"'),
+          ));
+        }
+        return;
+      }
+
+      final confirm = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Стать источником трафика?'),
+          content: Text(
+              'Вы направляете посетителей в $targetShopId. Получаете $bid руб. за переход.'),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Отмена')),
+            ElevatedButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Да, создать')),
+          ],
+        ),
+      );
+      if (confirm != true) return;
+
       final collabData = {
-        'fromShopId': _currentShopId,
-        'toShopId': targetShopId,
-        'expires': Timestamp.fromDate(DateTime.now().add(const Duration(days: 90))),
+        'from_shop_id': _currentShopId,
+        'to_shop_id': targetShopId,
+        'expires': DateTime.now().add(const Duration(days: 90)).toIso8601String(),
         'clicks': 0,
         'bid': bid,
         'type': 'auction_response',
-        'offerId': offerId,
-        'createdAt': FieldValue.serverTimestamp(),
+        'offer_id': offerId,
+        'created_at': DateTime.now().toIso8601String(),
       };
-      final collabDocRef = await _firestore.collection('active_collabs').add(collabData);
+      final collabResult = await _sb.from('active_collabs').insert(collabData).select('id').single();
       AuditLogger.log(
         action: 'create',
         collection: 'active_collabs',
-        docId: collabDocRef.id,
+        docId: collabResult['id'].toString(),
         changes: collabData,
       );
 
       final offerUpdate = {
         'status': 'taken',
-        'takenBy': _currentShopId,
-        'takenAt': FieldValue.serverTimestamp(),
+        'taken_by': _currentShopId,
+        'taken_at': DateTime.now().toIso8601String(),
       };
-      await _firestore.collection('auction_offers').doc(offerId).update(offerUpdate);
-      AuditLogger.log(
-        action: 'update',
-        collection: 'auction_offers',
-        docId: offerId,
-        changes: offerUpdate,
-      );
+      await _sb.from('auction_offers').update(offerUpdate).eq('id', offerId);
+      AuditLogger.log(action: 'update', collection: 'auction_offers', docId: offerId, changes: offerUpdate);
 
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Коллаборация создана! Оферта больше не доступна для других магазинов.')));
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Коллаборация создана!')),
+        );
+      }
+      _loadAllData();
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Ошибка: $e')));
+      debugPrint('❌ _acceptOffer: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Ошибка: $e')));
+      }
     }
   }
 }

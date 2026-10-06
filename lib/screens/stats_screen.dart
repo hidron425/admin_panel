@@ -1,14 +1,11 @@
 import 'package:flutter/material.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart';
+import 'package:supabase_flutter/supabase_flutter.dart' as supa;
 import 'package:intl/intl.dart';
 import 'package:csv/csv.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'dart:html' as html;
 import 'dart:typed_data';
-import 'package:cloud_functions/cloud_functions.dart';
-import 'package:admin_panel/utils/audit.dart';
-import 'package:admin_panel/utils/app_state.dart';   // 🆕 глобальное состояние
+import 'package:admin_panel/utils/app_state.dart';
 
 class StatsScreen extends StatefulWidget {
   final int initialTabIndex;
@@ -19,9 +16,11 @@ class StatsScreen extends StatefulWidget {
 }
 
 class _StatsScreenState extends State<StatsScreen> with SingleTickerProviderStateMixin {
+  supa.SupabaseClient get _sb => supa.Supabase.instance.client;
+
   late TabController _tabController;
   String? _shopId;
-  String? _selectedMallId;   // 🆕 текущий выбранный ТЦ
+  String? _selectedMallId;
   String _period = 'week';
   int _firstSales = 0;
   int _secondarySales = 0;
@@ -33,25 +32,23 @@ class _StatsScreenState extends State<StatsScreen> with SingleTickerProviderStat
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 3, vsync: this, initialIndex: widget.initialTabIndex);
-    _selectedMallId = AppState.selectedMallId.value;   // 🆕 инициализация
-    AppState.selectedMallId.addListener(_onMallChanged);   // 🆕 подписка
+    _tabController = TabController(length: 2, vsync: this, initialIndex: widget.initialTabIndex);
+    _selectedMallId = AppState.selectedMallId.value;
+    AppState.selectedMallId.addListener(_onMallChanged);
     _getShopId();
   }
 
   @override
   void dispose() {
-    AppState.selectedMallId.removeListener(_onMallChanged);   // 🆕 отписка
+    AppState.selectedMallId.removeListener(_onMallChanged);
     _tabController.dispose();
     super.dispose();
   }
 
-  // 🆕 Обработчик изменения ТЦ
   void _onMallChanged() {
     if (_selectedMallId != AppState.selectedMallId.value) {
       setState(() => _selectedMallId = AppState.selectedMallId.value);
       if (_shopId == null) {
-        // Если мы в режиме агрегатора, перезагружаем данные
         _loadStats();
         _loadActivations();
       }
@@ -59,143 +56,98 @@ class _StatsScreenState extends State<StatsScreen> with SingleTickerProviderStat
   }
 
   Future<void> _getShopId() async {
-    final user = FirebaseAuth.instance.currentUser;
-    if (user != null && user.email != null) {
-      final doc = await FirebaseFirestore.instance.collection('users').doc(user.email!).get();
-      if (mounted) {
-        setState(() {
-          _shopId = doc.data()?['storeId'] as String?;
-          _loading = false;
-        });
-      }
-      if (_shopId != null) {
+    try {
+      final email = _sb.auth.currentUser?.email;
+      if (email != null) {
+        final data = await _sb
+            .from('user_metadata')
+            .select('store_id')
+            .eq('email', email)
+            .maybeSingle();
+        if (mounted) {
+          setState(() {
+            _shopId = data?['store_id'] as String?;
+          });
+        }
         await _loadStats();
         await _loadActivations();
-      } else {
-        // Агрегатор: загружаем данные по выбранному ТЦ или всем ТЦ
-        await _loadStats();
-        await _loadActivations();
       }
-    } else {
-      if (mounted) setState(() => _loading = false);
+    } catch (e) {
+      debugPrint('❌ _getShopId: $e');
+    }
+    if (mounted) setState(() => _loading = false);
+  }
+
+  DateTime _getStartDate() {
+    final now = DateTime.now();
+    switch (_period) {
+      case 'today':
+        return DateTime(now.year, now.month, now.day);
+      case 'week':
+        return now.subtract(const Duration(days: 7));
+      case 'month':
+        return DateTime(now.year, now.month - 1, now.day);
+      default:
+        return DateTime(now.year, now.month, now.day);
     }
   }
 
   Future<void> _loadStats() async {
-    if (_shopId != null) {
-      // --- Режим магазина ---
-      final now = DateTime.now();
-      DateTime startDate;
-      switch (_period) {
-        case 'today':
-          startDate = DateTime(now.year, now.month, now.day);
-          break;
-        case 'week':
-          startDate = now.subtract(const Duration(days: 7));
-          break;
-        case 'month':
-          startDate = DateTime(now.year, now.month - 1, now.day);
-          break;
-        default:
-          startDate = DateTime(now.year, now.month, now.day);
+    try {
+      final startDate = _getStartDate();
+      final startIso = startDate.toIso8601String();
+
+      List<String> shopIds = [];
+      if (_shopId != null) {
+        shopIds = [_shopId!];
+      } else {
+        var shopsQuery = _sb.from('shops').select('firestore_id');
+        if (_selectedMallId != null) {
+          shopsQuery = shopsQuery.eq('mall_id', _selectedMallId!);
+        }
+        final shops = await shopsQuery;
+        shopIds = (shops as List).map((j) => j['firestore_id'] as String).toList();
       }
-
-      final salesQuery = await FirebaseFirestore.instance
-          .collection('sales')
-          .where('shopId', isEqualTo: _shopId)
-          .where('timestamp', isGreaterThanOrEqualTo: Timestamp.fromDate(startDate))
-          .get();
-
-      int first = 0;
-      int secondary = 0;
-      Map<String, int> dailyCount = {};
-
-      for (var doc in salesQuery.docs) {
-        final step = doc['step'] as int? ?? 0;
-        final ts = (doc['timestamp'] as Timestamp).toDate();
-        final day = DateFormat('yyyy-MM-dd').format(ts);
-        dailyCount[day] = (dailyCount[day] ?? 0) + 1;
-
-        if (step == 1) first++;
-        else if (step >= 2) secondary++;
-      }
-
-      final sortedDays = dailyCount.keys.toList()..sort();
-      final dailySales = sortedDays.map((day) => {
-        'day': day,
-        'count': dailyCount[day] ?? 0,
-      }).toList();
-
-      if (mounted) {
-        setState(() {
-          _firstSales = first;
-          _secondarySales = secondary;
-          _totalSales = first + secondary;
-          _dailySales = dailySales;
-        });
-      }
-    } else {
-      // --- Режим агрегатора ---
-      // Загружаем ID магазинов выбранного ТЦ (или все, если ТЦ не выбран)
-      Set<String> shopIds = {};
-      Query shopsQuery = FirebaseFirestore.instance.collection('shops');
-      if (_selectedMallId != null) {
-        shopsQuery = shopsQuery.where('mallId', isEqualTo: _selectedMallId);
-      }
-      final shopsSnap = await shopsQuery.get();
-      shopIds = shopsSnap.docs.map((doc) => doc.id).toSet();
 
       if (shopIds.isEmpty) {
-        setState(() {
-          _firstSales = 0;
-          _secondarySales = 0;
-          _totalSales = 0;
-          _dailySales = [];
-        });
+        if (mounted) {
+          setState(() {
+            _firstSales = 0;
+            _secondarySales = 0;
+            _totalSales = 0;
+            _dailySales = [];
+          });
+        }
         return;
       }
 
-      final now = DateTime.now();
-      DateTime startDate;
-      switch (_period) {
-        case 'today':
-          startDate = DateTime(now.year, now.month, now.day);
-          break;
-        case 'week':
-          startDate = now.subtract(const Duration(days: 7));
-          break;
-        case 'month':
-          startDate = DateTime(now.year, now.month - 1, now.day);
-          break;
-        default:
-          startDate = DateTime(now.year, now.month, now.day);
-      }
-
-      Query salesQuery = FirebaseFirestore.instance
-          .collection('sales')
-          .where('shopId', whereIn: shopIds.toList())
-          .where('timestamp', isGreaterThanOrEqualTo: Timestamp.fromDate(startDate));
-      final salesSnap = await salesQuery.get();
+      final salesData = await _sb
+          .from('sales')
+          .select('step, created_at')
+          .inFilter('shop_id', shopIds)
+          .gte('created_at', startIso);
 
       int first = 0;
       int secondary = 0;
-      Map<String, int> dailyCount = {};
+      final Map<String, int> dailyCount = {};
 
-      for (var doc in salesSnap.docs) {
-        final step = doc['step'] as int? ?? 0;
-        final ts = (doc['timestamp'] as Timestamp).toDate();
-        final day = DateFormat('yyyy-MM-dd').format(ts);
+      for (final row in salesData as List) {
+        final m = Map<String, dynamic>.from(row);
+        final step = (m['step'] as num?)?.toInt() ?? 0;
+        final tsRaw = m['created_at']?.toString();
+        if (tsRaw == null) continue;
+        final ts = DateTime.tryParse(tsRaw);
+        if (ts == null) continue;
+        final day = DateFormat('yyyy-MM-dd').format(ts.toLocal());
         dailyCount[day] = (dailyCount[day] ?? 0) + 1;
-
         if (step == 1) first++;
         else if (step >= 2) secondary++;
       }
 
       final sortedDays = dailyCount.keys.toList()..sort();
-      final dailySales = sortedDays.map((day) => {
-        'day': day,
-        'count': dailyCount[day] ?? 0,
-      }).toList();
+      final dailySales = sortedDays
+          .map((day) => {'day': day, 'count': dailyCount[day] ?? 0})
+          .toList();
 
       if (mounted) {
         setState(() {
@@ -205,90 +157,70 @@ class _StatsScreenState extends State<StatsScreen> with SingleTickerProviderStat
           _dailySales = dailySales;
         });
       }
+    } catch (e) {
+      debugPrint('❌ _loadStats: $e');
     }
   }
 
   Future<void> _loadActivations() async {
-    if (_shopId != null) {
-      // Режим магазина
-      final snapshot = await FirebaseFirestore.instance
-          .collection('sales')
-          .where('shopId', isEqualTo: _shopId)
-          .orderBy('timestamp', descending: true)
-          .get();
-
-      final List<Map<String, dynamic>> list = [];
-      for (var doc in snapshot.docs) {
-        final step = doc['step'] as int? ?? 0;
-        list.add({
-          'id': doc.id,
-          'timestamp': (doc['timestamp'] as Timestamp).toDate(),
-          'step': step,
-          'type': step == 1 ? 'Первая' : 'Вторичная',
-          'userId': doc['userId'] ?? 'аноним',
-        });
+    try {
+      List<String> shopIds = [];
+      if (_shopId != null) {
+        shopIds = [_shopId!];
+      } else {
+        var shopsQuery = _sb.from('shops').select('firestore_id');
+        if (_selectedMallId != null) {
+          shopsQuery = shopsQuery.eq('mall_id', _selectedMallId!);
+        }
+        final shops = await shopsQuery;
+        shopIds = (shops as List).map((j) => j['firestore_id'] as String).toList();
       }
-      if (mounted) {
-        setState(() {
-          _activations = list;
-        });
-      }
-    } else {
-      // Режим агрегатора
-      Set<String> shopIds = {};
-      Query shopsQuery = FirebaseFirestore.instance.collection('shops');
-      if (_selectedMallId != null) {
-        shopsQuery = shopsQuery.where('mallId', isEqualTo: _selectedMallId);
-      }
-      final shopsSnap = await shopsQuery.get();
-      shopIds = shopsSnap.docs.map((doc) => doc.id).toSet();
 
       if (shopIds.isEmpty) {
-        setState(() => _activations = []);
+        if (mounted) setState(() => _activations = []);
         return;
       }
 
-      final snapshot = await FirebaseFirestore.instance
-          .collection('sales')
-          .where('shopId', whereIn: shopIds.toList())
-          .orderBy('timestamp', descending: true)
-          .get();
+      final data = await _sb
+          .from('sales')
+          .select('firestore_id, user_id, step, created_at')
+          .inFilter('shop_id', shopIds)
+          .order('created_at', ascending: false)
+          .limit(200);
 
-      final List<Map<String, dynamic>> list = [];
-      for (var doc in snapshot.docs) {
-        final step = doc['step'] as int? ?? 0;
+      final list = <Map<String, dynamic>>[];
+      for (final row in data as List) {
+        final m = Map<String, dynamic>.from(row);
+        final step = (m['step'] as num?)?.toInt() ?? 0;
+        final ts = DateTime.tryParse(m['created_at']?.toString() ?? '') ?? DateTime.now();
         list.add({
-          'id': doc.id,
-          'timestamp': (doc['timestamp'] as Timestamp).toDate(),
+          'id': m['firestore_id']?.toString() ?? '',
+          'timestamp': ts,
           'step': step,
           'type': step == 1 ? 'Первая' : 'Вторичная',
-          'userId': doc['userId'] ?? 'аноним',
+          'userId': m['user_id'] ?? 'аноним',
         });
       }
-      if (mounted) {
-        setState(() {
-          _activations = list;
-        });
-      }
+      if (mounted) setState(() => _activations = list);
+    } catch (e) {
+      debugPrint('❌ _loadActivations: $e');
     }
   }
 
   Future<void> _exportToCsv() async {
     if (_activations.isEmpty) return;
-
-    List<List<dynamic>> rows = [
+    final rows = <List<dynamic>>[
       ['Дата', 'Шаг', 'Тип', 'ID пользователя']
     ];
     for (var act in _activations) {
       rows.add([
-        DateFormat('yyyy-MM-dd HH:mm:ss').format(act['timestamp']),
+        DateFormat('yyyy-MM-dd HH:mm:ss').format(act['timestamp'] as DateTime),
         act['step'],
         act['type'],
         act['userId'],
       ]);
     }
-
-    String csv = const ListToCsvConverter().convert(rows);
+    final csv = const ListToCsvConverter().convert(rows);
     final bytes = Uint8List.fromList(csv.codeUnits);
     final blob = html.Blob([bytes], 'text/csv');
     final url = html.Url.createObjectUrlFromBlob(blob);
@@ -319,7 +251,6 @@ class _StatsScreenState extends State<StatsScreen> with SingleTickerProviderStat
           tabs: const [
             Tab(text: '📊 Статистика'),
             Tab(text: '📋 История'),
-            Tab(text: '📢 Уведомления'),
           ],
         ),
       ),
@@ -328,16 +259,12 @@ class _StatsScreenState extends State<StatsScreen> with SingleTickerProviderStat
         children: [
           _buildStatsTab(),
           _buildHistoryTab(),
-          _shopId != null ? const NotificationsForm() : const Center(child: Text('Уведомления доступны только для магазинов')),
         ],
       ),
     );
   }
 
   Widget _buildStatsTab() {
-    if (_dailySales.isEmpty && _totalSales == 0) {
-      return const Center(child: Text('Нет данных'));
-    }
     return SingleChildScrollView(
       padding: const EdgeInsets.all(16),
       child: Column(
@@ -403,7 +330,7 @@ class _StatsScreenState extends State<StatsScreen> with SingleTickerProviderStat
             ),
           ),
           const SizedBox(height: 20),
-          const Text('График активности (продажи по дням)', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+          const Text('График активности', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
           const SizedBox(height: 16),
           _dailySales.isEmpty
               ? const Text('Нет данных')
@@ -412,10 +339,10 @@ class _StatsScreenState extends State<StatsScreen> with SingleTickerProviderStat
                   child: BarChart(
                     BarChartData(
                       alignment: BarChartAlignment.spaceAround,
-                      maxY: (_dailySales.map((e) => e['count'] as int).reduce((a,b) => a > b ? a : b).toDouble() + 1).clamp(1, double.infinity),
+                      maxY: (_dailySales.map((e) => e['count'] as int).reduce((a, b) => a > b ? a : b).toDouble() + 1).clamp(1, double.infinity),
                       barGroups: _dailySales.asMap().entries.map((entry) {
-                        int idx = entry.key;
-                        var data = entry.value;
+                        final idx = entry.key;
+                        final data = entry.value;
                         return BarChartGroupData(
                           x: idx,
                           barRods: [
@@ -431,7 +358,7 @@ class _StatsScreenState extends State<StatsScreen> with SingleTickerProviderStat
                         bottomTitles: AxisTitles(
                           sideTitles: SideTitles(
                             showTitles: true,
-                            getTitlesWidget: (double value, TitleMeta meta) {
+                            getTitlesWidget: (value, meta) {
                               final idx = value.toInt();
                               if (idx >= 0 && idx < _dailySales.length) {
                                 return Text(_dailySales[idx]['day'], style: const TextStyle(fontSize: 10));
@@ -452,62 +379,9 @@ class _StatsScreenState extends State<StatsScreen> with SingleTickerProviderStat
                     ),
                   ),
                 ),
-          FutureBuilder<int>(
-            future: _getCollabClicks(),
-            builder: (context, snapshot) {
-              if (!snapshot.hasData) return const SizedBox.shrink();
-              return Card(
-                margin: const EdgeInsets.only(top: 16),
-                child: Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text('Переходы по коллаборациям', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-                      const SizedBox(height: 8),
-                      Text('${snapshot.data}', style: const TextStyle(fontSize: 24)),
-                    ],
-                  ),
-                ),
-              );
-            },
-          ),
         ],
       ),
     );
-  }
-
-  Future<int> _getCollabClicks() async {
-    if (_shopId != null) {
-      final snapshot = await FirebaseFirestore.instance
-          .collection('active_collabs')
-          .where('fromShopId', isEqualTo: _shopId)
-          .get();
-      int total = 0;
-      for (var doc in snapshot.docs) {
-        total += (doc.data()['clicks'] as int? ?? 0);
-      }
-      return total;
-    } else {
-      // Агрегатор: сумма по выбранному ТЦ или всем
-      Set<String> shopIds = {};
-      Query shopsQuery = FirebaseFirestore.instance.collection('shops');
-      if (_selectedMallId != null) {
-        shopsQuery = shopsQuery.where('mallId', isEqualTo: _selectedMallId);
-      }
-      final shopsSnap = await shopsQuery.get();
-      shopIds = shopsSnap.docs.map((doc) => doc.id).toSet();
-      if (shopIds.isEmpty) return 0;
-      final snapshot = await FirebaseFirestore.instance
-          .collection('active_collabs')
-          .where('fromShopId', whereIn: shopIds.toList())
-          .get();
-      int total = 0;
-      for (var doc in snapshot.docs) {
-        total += (doc.data()['clicks'] as int? ?? 0);
-      }
-      return total;
-    }
   }
 
   Widget _buildHistoryTab() {
@@ -529,170 +403,20 @@ class _StatsScreenState extends State<StatsScreen> with SingleTickerProviderStat
                   itemCount: _activations.length,
                   itemBuilder: (context, index) {
                     final act = _activations[index];
+                    final userId = act['userId'].toString();
+                    final shortId = userId.length > 6 ? userId.substring(0, 6) : userId;
                     return Card(
                       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
                       child: ListTile(
                         title: Text('Шаг ${act['step']} — ${act['type']}'),
-                        subtitle: Text(DateFormat('dd.MM.yyyy HH:mm:ss').format(act['timestamp'])),
-                        trailing: Text(act['userId'].toString().substring(0, 6) + '...'),
+                        subtitle: Text(DateFormat('dd.MM.yyyy HH:mm:ss').format(act['timestamp'] as DateTime)),
+                        trailing: Text('$shortId...'),
                       ),
                     );
                   },
                 ),
         ),
       ],
-    );
-  }
-}
-
-class NotificationsForm extends StatefulWidget {
-  const NotificationsForm({Key? key}) : super(key: key);
-
-  @override
-  State<NotificationsForm> createState() => _NotificationsFormState();
-}
-
-class _NotificationsFormState extends State<NotificationsForm> {
-  final _titleController = TextEditingController();
-  final _bodyController = TextEditingController();
-  final _priorityController = TextEditingController(text: '1');
-  bool _urgent = false;
-  final _firestore = FirebaseFirestore.instance;
-  final _functions = FirebaseFunctions.instance;
-  bool _sending = false;
-  String? _shopId;
-  int _subscribersCount = 0;
-
-  @override
-  void initState() {
-    super.initState();
-    _getShopIdAndSubscribers();
-  }
-
-  Future<void> _getShopIdAndSubscribers() async {
-    final user = FirebaseAuth.instance.currentUser;
-    if (user != null && user.email != null) {
-      final userDoc = await _firestore.collection('users').doc(user.email!).get();
-      final shopId = userDoc.data()?['storeId'] as String?;
-      if (shopId != null) {
-        setState(() => _shopId = shopId);
-        final snapshot = await _firestore
-            .collection('user_progress')
-            .where('subscribedShops', arrayContains: shopId)
-            .get();
-        setState(() => _subscribersCount = snapshot.docs.length);
-      }
-    }
-  }
-
-  Future<void> _sendNotification() async {
-    if (_titleController.text.trim().isEmpty || _bodyController.text.trim().isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Заполните заголовок и текст')));
-      return;
-    }
-    if (_shopId == null) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Магазин не определён')));
-      return;
-    }
-    if (_subscribersCount == 0) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Нет подписчиков для рассылки')));
-      return;
-    }
-
-    setState(() => _sending = true);
-    try {
-      final snapshot = await _firestore
-          .collection('user_progress')
-          .where('subscribedShops', arrayContains: _shopId)
-          .get();
-      final userIds = snapshot.docs.map((doc) => doc.id).toList();
-
-      final callable = _functions.httpsCallable('addPushToQueue');
-      final result = await callable.call({
-        'shopId': _shopId,
-        'userIds': userIds,
-        'title': _titleController.text.trim(),
-        'body': _bodyController.text.trim(),
-        'priority': int.tryParse(_priorityController.text) ?? 1,
-        'urgent': _urgent,
-      });
-
-      if (result.data['success'] == true) {
-        AuditLogger.log(
-          action: 'send_push',
-          collection: 'user_progress',
-          docId: _shopId!,
-          changes: {
-            'title': _titleController.text.trim(),
-            'body': _bodyController.text.trim(),
-            'subscribersCount': userIds.length,
-          },
-        );
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text('Уведомление поставлено в очередь для ${result.data['count']} подписчиков'),
-        ));
-        _titleController.clear();
-        _bodyController.clear();
-        _priorityController.text = '1';
-        setState(() => _urgent = false);
-      } else {
-        throw Exception('Функция вернула ошибку');
-      }
-    } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Ошибка: $e')));
-    } finally {
-      setState(() => _sending = false);
-    }
-  }
-
-  @override
-  void dispose() {
-    _titleController.dispose();
-    _bodyController.dispose();
-    _priorityController.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text('Подписчиков вашего магазина: $_subscribersCount', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-          const SizedBox(height: 20),
-          TextField(
-            controller: _titleController,
-            decoration: const InputDecoration(labelText: 'Заголовок уведомления'),
-          ),
-          const SizedBox(height: 16),
-          TextField(
-            controller: _bodyController,
-            decoration: const InputDecoration(labelText: 'Текст уведомления'),
-            maxLines: 3,
-          ),
-          const SizedBox(height: 16),
-          TextField(
-            controller: _priorityController,
-            decoration: const InputDecoration(labelText: 'Приоритет (1-10)'),
-            keyboardType: TextInputType.number,
-          ),
-          const SizedBox(height: 8),
-          SwitchListTile(
-            title: const Text('Срочное уведомление (пропустит очередь)'),
-            value: _urgent,
-            onChanged: (val) => setState(() => _urgent = val),
-          ),
-          const SizedBox(height: 32),
-          Center(
-            child: ElevatedButton(
-              onPressed: _sending ? null : _sendNotification,
-              child: _sending ? const CircularProgressIndicator() : const Text('Отправить push'),
-            ),
-          ),
-        ],
-      ),
     );
   }
 }

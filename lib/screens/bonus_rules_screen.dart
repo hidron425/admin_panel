@@ -1,9 +1,8 @@
 import 'package:flutter/material.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:supabase_flutter/supabase_flutter.dart' as supa;
 import 'package:admin_panel/utils/audit.dart';
 import 'package:admin_panel/utils/app_state.dart';
 
-// Типы условий и триггеров
 const List<String> triggerOptions = [
   'step_completed',
   'cycle_completed',
@@ -26,14 +25,18 @@ class BonusRulesScreen extends StatefulWidget {
 }
 
 class _BonusRulesScreenState extends State<BonusRulesScreen> {
-  final _firestore = FirebaseFirestore.instance;
+  supa.SupabaseClient get _sb => supa.Supabase.instance.client;
+
   String? _selectedMallId;
+  List<Map<String, dynamic>> _rules = [];
+  bool _isLoading = true;
 
   @override
   void initState() {
     super.initState();
     _selectedMallId = AppState.selectedMallId.value;
     AppState.selectedMallId.addListener(_onMallChanged);
+    _loadRules();
   }
 
   @override
@@ -45,30 +48,53 @@ class _BonusRulesScreenState extends State<BonusRulesScreen> {
   void _onMallChanged() {
     if (_selectedMallId != AppState.selectedMallId.value) {
       setState(() => _selectedMallId = AppState.selectedMallId.value);
+      _loadRules();
     }
   }
 
-  // Проверяем, подходит ли правило под выбранный ТЦ
   bool _ruleAppliesToMall(Map<String, dynamic> data) {
-    final ruleMallId = data['mallId'] as String?;
-    if (_selectedMallId == null) return true; // все ТЦ
-    return ruleMallId == null || ruleMallId == _selectedMallId; // общее или конкретное
+    final ruleMallId = data['mall_id'] as String?;
+    if (_selectedMallId == null) return true;
+    return ruleMallId == null || ruleMallId.isEmpty || ruleMallId == _selectedMallId;
   }
 
-  // ---------- Открыть диалог добавления / редактирования ----------
+  Future<void> _loadRules() async {
+    setState(() => _isLoading = true);
+    try {
+      final data = await _sb
+          .from('bonus_rules')
+          .select()
+          .order('created_at', ascending: false);
+      final all = (data as List)
+          .map((json) => Map<String, dynamic>.from(json))
+          .toList();
+      if (mounted) {
+        setState(() {
+          _rules = all.where(_ruleAppliesToMall).toList();
+          _isLoading = false;
+        });
+      }
+    } catch (e) {
+      debugPrint('❌ _loadRules: $e');
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
   Future<void> _showRuleDialog({String? ruleId, Map<String, dynamic>? existing}) async {
     final isEdit = ruleId != null;
     final formKey = GlobalKey<FormState>();
 
-    final rewardTitleCtrl = TextEditingController(text: existing?['reward']?['title'] ?? '');
-    final rewardMsgCtrl = TextEditingController(text: existing?['reward']?['message'] ?? '');
-    final rewardIconCtrl = TextEditingController(text: existing?['reward']?['icon'] ?? '🎁');
-    final rewardShopCtrl = TextEditingController(text: existing?['reward']?['targetShopId'] ?? '');
+    final reward = (existing?['reward'] as Map<String, dynamic>?) ?? {};
+    final rewardTitleCtrl = TextEditingController(text: reward['title'] ?? '');
+    final rewardMsgCtrl = TextEditingController(text: reward['message'] ?? '');
+    final rewardIconCtrl = TextEditingController(text: reward['icon'] ?? '🎁');
+    final rewardShopCtrl = TextEditingController(text: reward['targetShopId'] ?? '');
 
     String selectedTrigger = existing?['trigger'] ?? 'step_completed';
-    bool oncePerUser = existing?['oncePerUser'] ?? true;
+    bool oncePerUser = existing?['once_per_user'] ?? true;
     bool active = existing?['active'] ?? true;
-    bool isCommon = existing?['mallId'] == null || existing?['mallId'] == ''; // общее правило
+    final existingMallId = existing?['mall_id'] as String?;
+    bool isCommon = existingMallId == null || existingMallId.isEmpty;
 
     List<MapEntry<String, String>> conditions = [];
     final existingCond = existing?['conditions'] as Map<String, dynamic>?;
@@ -91,16 +117,15 @@ class _BonusRulesScreenState extends State<BonusRulesScreen> {
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    // ----- ТРИГГЕР -----
                     DropdownButtonFormField<String>(
                       value: selectedTrigger,
                       decoration: const InputDecoration(labelText: 'Триггер'),
-                      items: triggerOptions.map((t) => DropdownMenuItem(value: t, child: Text(t))).toList(),
+                      items: triggerOptions
+                          .map((t) => DropdownMenuItem(value: t, child: Text(t)))
+                          .toList(),
                       onChanged: (v) => setDialogState(() => selectedTrigger = v!),
                     ),
                     const SizedBox(height: 16),
-
-                    // ----- УСЛОВИЯ -----
                     const Text('Условия срабатывания', style: TextStyle(fontWeight: FontWeight.bold)),
                     const SizedBox(height: 8),
                     ...List.generate(conditions.length, (i) {
@@ -114,7 +139,8 @@ class _BonusRulesScreenState extends State<BonusRulesScreen> {
                               items: conditionTypes.entries
                                   .map((e) => DropdownMenuItem(value: e.key, child: Text(e.value)))
                                   .toList(),
-                              onChanged: (v) => setDialogState(() => conditions[i] = MapEntry(v!, conditions[i].value)),
+                              onChanged: (v) => setDialogState(
+                                  () => conditions[i] = MapEntry(v!, conditions[i].value)),
                             ),
                           ),
                           const SizedBox(width: 8),
@@ -123,7 +149,8 @@ class _BonusRulesScreenState extends State<BonusRulesScreen> {
                             child: TextFormField(
                               initialValue: conditions[i].value,
                               decoration: const InputDecoration(labelText: 'Значение'),
-                              onChanged: (v) => setDialogState(() => conditions[i] = MapEntry(conditions[i].key, v)),
+                              onChanged: (v) => setDialogState(
+                                  () => conditions[i] = MapEntry(conditions[i].key, v)),
                             ),
                           ),
                           IconButton(
@@ -137,12 +164,11 @@ class _BonusRulesScreenState extends State<BonusRulesScreen> {
                     OutlinedButton.icon(
                       icon: const Icon(Icons.add),
                       label: const Text('Добавить условие'),
-                      onPressed: () => setDialogState(() => conditions.add(const MapEntry('stepCount', '1'))),
+                      onPressed: () => setDialogState(
+                          () => conditions.add(const MapEntry('stepCount', '1'))),
                     ),
-
                     const SizedBox(height: 16),
                     const Divider(),
-                    // ----- НАГРАДА -----
                     const Text('Награда', style: TextStyle(fontWeight: FontWeight.bold)),
                     const SizedBox(height: 8),
                     TextFormField(
@@ -172,7 +198,6 @@ class _BonusRulesScreenState extends State<BonusRulesScreen> {
                       ],
                     ),
                     const SizedBox(height: 16),
-                    // Переключатель "Общее правило"
                     SwitchListTile(
                       title: const Text('Общее правило (для всех ТЦ)'),
                       subtitle: const Text('Если включено, правило не привязано к конкретному ТЦ'),
@@ -202,7 +227,7 @@ class _BonusRulesScreenState extends State<BonusRulesScreen> {
               TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Отмена')),
               ElevatedButton(
                 onPressed: () async {
-                  final data = {
+                  final data = <String, dynamic>{
                     'trigger': selectedTrigger,
                     'conditions': Map.fromEntries(conditions),
                     'reward': {
@@ -211,20 +236,44 @@ class _BonusRulesScreenState extends State<BonusRulesScreen> {
                       'icon': rewardIconCtrl.text.trim(),
                       'targetShopId': rewardShopCtrl.text.trim(),
                     },
-                    'oncePerUser': oncePerUser,
+                    'once_per_user': oncePerUser,
                     'active': active,
-                    // Если правило общее, mallId = null, иначе выбранный ТЦ
-                    'mallId': isCommon ? null : _selectedMallId,
+                    'mall_id': isCommon ? null : _selectedMallId,
                   };
 
-                  if (isEdit) {
-                    await _firestore.collection('bonus_rules').doc(ruleId).update(data);
-                    AuditLogger.log(action: 'update', collection: 'bonus_rules', docId: ruleId, changes: data);
-                  } else {
-                    final ref = await _firestore.collection('bonus_rules').add(data);
-                    AuditLogger.log(action: 'create', collection: 'bonus_rules', docId: ref.id, changes: data);
+                  try {
+                    if (isEdit) {
+                      await _sb.from('bonus_rules').update(data).eq('id', ruleId);
+                      AuditLogger.log(
+                        action: 'update',
+                        collection: 'bonus_rules',
+                        docId: ruleId,
+                        changes: data,
+                      );
+                    } else {
+                      data['created_at'] = DateTime.now().toIso8601String();
+                      final result = await _sb
+                          .from('bonus_rules')
+                          .insert(data)
+                          .select('id')
+                          .single();
+                      AuditLogger.log(
+                        action: 'create',
+                        collection: 'bonus_rules',
+                        docId: result['id'].toString(),
+                        changes: data,
+                      );
+                    }
+                    if (mounted) Navigator.pop(ctx);
+                    _loadRules();
+                  } catch (e) {
+                    debugPrint('❌ save rule: $e');
+                    if (mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text('Ошибка: $e')),
+                      );
+                    }
                   }
-                  Navigator.pop(ctx);
                 },
                 child: const Text('Сохранить'),
               ),
@@ -235,7 +284,6 @@ class _BonusRulesScreenState extends State<BonusRulesScreen> {
     );
   }
 
-  // ---------- Удаление ----------
   Future<void> _deleteRule(String id) async {
     final confirm = await showDialog<bool>(
       context: context,
@@ -248,12 +296,16 @@ class _BonusRulesScreenState extends State<BonusRulesScreen> {
       ),
     );
     if (confirm == true) {
-      await _firestore.collection('bonus_rules').doc(id).delete();
-      AuditLogger.log(action: 'delete', collection: 'bonus_rules', docId: id);
+      try {
+        await _sb.from('bonus_rules').delete().eq('id', id);
+        AuditLogger.log(action: 'delete', collection: 'bonus_rules', docId: id);
+        _loadRules();
+      } catch (e) {
+        debugPrint('❌ delete rule: $e');
+      }
     }
   }
 
-  // ---------- UI ----------
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -267,75 +319,63 @@ class _BonusRulesScreenState extends State<BonusRulesScreen> {
           onPressed: () => _showRuleDialog(),
         ),
       ),
-      body: StreamBuilder<QuerySnapshot>(
-        stream: _firestore.collection('bonus_rules').snapshots(),
-        builder: (context, snapshot) {
-          if (snapshot.hasError) return Center(child: Text('Ошибка: ${snapshot.error}'));
-          if (snapshot.connectionState == ConnectionState.waiting) return const Center(child: CircularProgressIndicator());
+      body: _isLoading
+          ? const Center(child: CircularProgressIndicator())
+          : _rules.isEmpty
+              ? const Center(child: Text('Нет правил'))
+              : ListView.builder(
+                  itemCount: _rules.length,
+                  itemBuilder: (context, index) {
+                    final data = _rules[index];
+                    final id = data['id'].toString();
+                    final reward = (data['reward'] as Map<String, dynamic>?) ?? {};
+                    final conditions = (data['conditions'] as Map<String, dynamic>?) ?? {};
+                    final trigger = data['trigger'] ?? '?';
+                    final once = data['once_per_user'] == true;
+                    final active = data['active'] == true;
+                    final mallId = data['mall_id'] as String?;
+                    final mallLabel = (mallId == null || mallId.isEmpty) ? 'Общее' : mallId;
 
-          // Фильтруем правила по выбранному ТЦ
-          final allDocs = snapshot.data!.docs;
-          final filteredDocs = allDocs.where((doc) {
-            final data = doc.data() as Map<String, dynamic>;
-            return _ruleAppliesToMall(data);
-          }).toList();
-
-          if (filteredDocs.isEmpty) return const Center(child: Text('Нет правил'));
-
-          return ListView.builder(
-            itemCount: filteredDocs.length,
-            itemBuilder: (context, index) {
-              final doc = filteredDocs[index];
-              final data = doc.data() as Map<String, dynamic>;
-              final reward = data['reward'] as Map<String, dynamic>? ?? {};
-              final conditions = data['conditions'] as Map<String, dynamic>? ?? {};
-              final trigger = data['trigger'] ?? '?';
-              final once = data['oncePerUser'] == true;
-              final active = data['active'] == true;
-              final mallId = data['mallId'] as String? ?? 'Общее';
-
-              return Card(
-                margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-                child: ExpansionTile(
-                  title: Text(reward['title'] ?? 'Без названия'),
-                  subtitle: Text('$trigger ${active ? "✅" : "⛔"} | ТЦ: $mallId'),
-                  children: [
-                    Padding(
-                      padding: const EdgeInsets.all(16),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
+                    return Card(
+                      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+                      child: ExpansionTile(
+                        title: Text(reward['title'] ?? 'Без названия'),
+                        subtitle: Text('$trigger ${active ? "✅" : "⛔"} | ТЦ: $mallLabel'),
                         children: [
-                          Text('Условия: ${conditions.isNotEmpty ? conditions.toString() : "нет"}'),
-                          const SizedBox(height: 8),
-                          Text('Награда: ${reward['message'] ?? ""}'),
-                          Text('Иконка: ${reward['icon'] ?? "🎁"}'),
-                          Text('Магазин: ${reward['targetShopId'] ?? "не указан"}'),
-                          const SizedBox(height: 8),
-                          Text('Однократно: $once'),
-                          const SizedBox(height: 8),
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.end,
-                            children: [
-                              IconButton(
-                                icon: const Icon(Icons.edit),
-                                onPressed: () => _showRuleDialog(ruleId: doc.id, existing: data),
-                              ),
-                              IconButton(
-                                icon: const Icon(Icons.delete, color: Colors.red),
-                                onPressed: () => _deleteRule(doc.id),
-                              ),
-                            ],
+                          Padding(
+                            padding: const EdgeInsets.all(16),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text('Условия: ${conditions.isNotEmpty ? conditions.toString() : "нет"}'),
+                                const SizedBox(height: 8),
+                                Text('Награда: ${reward['message'] ?? ""}'),
+                                Text('Иконка: ${reward['icon'] ?? "🎁"}'),
+                                Text('Магазин: ${reward['targetShopId'] ?? "не указан"}'),
+                                const SizedBox(height: 8),
+                                Text('Однократно: $once'),
+                                const SizedBox(height: 8),
+                                Row(
+                                  mainAxisAlignment: MainAxisAlignment.end,
+                                  children: [
+                                    IconButton(
+                                      icon: const Icon(Icons.edit),
+                                      onPressed: () => _showRuleDialog(ruleId: id, existing: data),
+                                    ),
+                                    IconButton(
+                                      icon: const Icon(Icons.delete, color: Colors.red),
+                                      onPressed: () => _deleteRule(id),
+                                    ),
+                                  ],
+                                ),
+                              ],
+                            ),
                           ),
                         ],
                       ),
-                    ),
-                  ],
+                    );
+                  },
                 ),
-              );
-            },
-          );
-        },
-      ),
     );
   }
 }

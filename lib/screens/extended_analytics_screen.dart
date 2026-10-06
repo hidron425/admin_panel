@@ -1,9 +1,8 @@
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:supabase_flutter/supabase_flutter.dart' as supa;
 import 'package:intl/intl.dart';
-import 'package:admin_panel/utils/audit.dart';
-import 'package:admin_panel/utils/app_state.dart';   // 🆕 глобальное состояние
+import 'package:admin_panel/utils/app_state.dart';
 
 class ExtendedAnalyticsScreen extends StatefulWidget {
   const ExtendedAnalyticsScreen({super.key});
@@ -13,12 +12,13 @@ class ExtendedAnalyticsScreen extends StatefulWidget {
 }
 
 class _ExtendedAnalyticsScreenState extends State<ExtendedAnalyticsScreen> {
-  final _firestore = FirebaseFirestore.instance;
+  supa.SupabaseClient get _sb => supa.Supabase.instance.client;
+
   DateTime _startDate = DateTime.now().subtract(const Duration(days: 30));
   DateTime _endDate = DateTime.now();
 
-  int? _selectedHour; // null = все часы
-  String? _selectedMallId;   // 🆕 текущий выбранный ТЦ
+  int? _selectedHour;
+  String? _selectedMallId;
 
   List<Map<String, dynamic>> _shopStats = [];
   bool _loading = true;
@@ -49,78 +49,86 @@ class _ExtendedAnalyticsScreenState extends State<ExtendedAnalyticsScreen> {
   Future<void> _loadData() async {
     setState(() => _loading = true);
     try {
-      // 1. Загружаем магазины с учётом выбранного ТЦ
-      Query shopsQuery = _firestore.collection('shops');
+      // 1. Загружаем магазины
+      var shopsQuery = _sb
+          .from('shops')
+          .select('firestore_id, name, category, map_x, map_y');
       if (_selectedMallId != null) {
-        shopsQuery = shopsQuery.where('mallId', isEqualTo: _selectedMallId);
+        shopsQuery = shopsQuery.eq('mall_id', _selectedMallId!);
       }
-      final shopsSnap = await shopsQuery.get();
+      final shopsData = await shopsQuery;
+
       final shopsMap = <String, Map<String, dynamic>>{};
-      for (var doc in shopsSnap.docs) {
-        shopsMap[doc.id] = doc.data() as Map<String, dynamic>;
+      for (final row in shopsData as List) {
+        final m = Map<String, dynamic>.from(row);
+        final id = m['firestore_id'] as String;
+        shopsMap[id] = m;
       }
 
-      // Множество ID магазинов выбранного ТЦ (для фильтрации продаж)
       final shopIds = shopsMap.keys.toSet();
 
-      // 2. Получаем продажи за период
-      Query salesQuery = _firestore
-          .collection('sales')
-          .where('timestamp', isGreaterThanOrEqualTo: Timestamp.fromDate(_startDate))
-          .where('timestamp', isLessThanOrEqualTo: Timestamp.fromDate(_endDate.add(const Duration(days: 1))));
+      // 2. Продажи за период
+      final startIso = _startDate.toIso8601String();
+      final endIso = _endDate.add(const Duration(days: 1)).toIso8601String();
 
-      final salesSnap = await salesQuery.get();
+      var salesQuery = _sb
+    .from('sales')
+    .select('shop_id, timestamp, created_at')
+    .gte('created_at', startIso)
+    .lte('created_at', endIso);
+
+      if (_selectedMallId != null && shopIds.isNotEmpty) {
+        salesQuery = salesQuery.inFilter('shop_id', shopIds.toList());
+      }
+
+      final salesData = await salesQuery;
+
       final Map<String, int> salesCount = {};
-      final Map<String, double> salesAmount = {};
 
-      for (var doc in salesSnap.docs) {
-        final data = doc.data() as Map<String, dynamic>;
-        final shopId = data['shopId'] as String? ?? '';
+      for (final row in salesData as List) {
+        final m = Map<String, dynamic>.from(row);
+        final shopId = m['shop_id'] as String? ?? '';
         if (shopId.isEmpty) continue;
-        // Если выбран ТЦ, пропускаем продажи магазинов не из этого ТЦ
-        if (_selectedMallId != null && !shopIds.contains(shopId)) continue;
 
-        final ts = (data['timestamp'] as Timestamp?)?.toDate();
+        final tsRaw = m['created_at']?.toString() ?? m['timestamp']?.toString();
+        if (tsRaw == null) continue;
+        final ts = DateTime.tryParse(tsRaw);
         if (ts == null) continue;
 
-        if (_selectedHour != null && ts.hour != _selectedHour) continue;
+        if (_selectedHour != null && ts.toLocal().hour != _selectedHour) continue;
 
         salesCount[shopId] = (salesCount[shopId] ?? 0) + 1;
-        final amount = (data['amount'] as num?)?.toDouble();
-        if (amount != null) {
-          salesAmount[shopId] = (salesAmount[shopId] ?? 0) + amount;
-        }
+        
       }
 
-      // Формируем список для таблицы
+      // 3. Формируем список для таблицы
       final List<Map<String, dynamic>> stats = [];
-      for (final shopId in shopsMap.keys) {
-        final shop = shopsMap[shopId]!;
-        final count = salesCount[shopId] ?? 0;
-        final totalAmount = salesAmount[shopId] ?? 0.0;
-        final avgAmount = count > 0 ? totalAmount / count : 0.0;
-        stats.add({
-          'id': shopId,
-          'name': shop['name'] ?? shopId,
-          'category': shop['category'] ?? '-',
-          'count': count,
-          'totalAmount': totalAmount,
-          'avgAmount': avgAmount,
-        });
-      }
+for (final shopId in shopsMap.keys) {
+  final shop = shopsMap[shopId]!;
+  final count = salesCount[shopId] ?? 0;
+  stats.add({
+    'id': shopId,
+    'name': shop['name'] ?? shopId,
+    'category': shop['category'] ?? '-',
+    'count': count,
+  });
+}
       stats.sort((a, b) => (b['count'] as int).compareTo(a['count'] as int));
 
-      setState(() {
-        _shopsInfo = shopsMap;
-        _heatData = salesCount;
-        _shopStats = stats;
-        _loading = false;
-      });
+      if (mounted) {
+        setState(() {
+          _shopsInfo = shopsMap;
+          _heatData = salesCount;
+          _shopStats = stats;
+          _loading = false;
+        });
+      }
     } catch (e) {
+      debugPrint('❌ _loadData (extended analytics): $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Ошибка: $e')));
+        setState(() => _loading = false);
       }
-      setState(() => _loading = false);
     }
   }
 
@@ -132,10 +140,7 @@ class _ExtendedAnalyticsScreenState extends State<ExtendedAnalyticsScreen> {
             ? 'Расширенная аналитика (Все ТЦ)'
             : 'Расширенная аналитика (${_selectedMallId})'),
         actions: [
-          IconButton(
-            icon: const Icon(Icons.refresh),
-            onPressed: _loadData,
-          ),
+          IconButton(icon: const Icon(Icons.refresh), onPressed: _loadData),
         ],
       ),
       body: _loading
@@ -145,7 +150,6 @@ class _ExtendedAnalyticsScreenState extends State<ExtendedAnalyticsScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // Выбор периода
                   Row(
                     children: [
                       Expanded(
@@ -186,7 +190,6 @@ class _ExtendedAnalyticsScreenState extends State<ExtendedAnalyticsScreen> {
                     ],
                   ),
                   const SizedBox(height: 16),
-                  // Фильтр по времени суток
                   Row(
                     children: [
                       const Text('Час суток: '),
@@ -214,7 +217,6 @@ class _ExtendedAnalyticsScreenState extends State<ExtendedAnalyticsScreen> {
                   ),
                   const SizedBox(height: 24),
 
-                  // Тепловая карта
                   if (_shopsInfo.isNotEmpty) ...[
                     const Text('Тепловая карта посещений',
                         style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
@@ -244,12 +246,20 @@ class _ExtendedAnalyticsScreenState extends State<ExtendedAnalyticsScreen> {
                                 child: Container(color: Colors.grey[200]),
                               ),
                               for (final shopId in _shopsInfo.keys)
-                                if (_shopsInfo[shopId]!['mapX'] != null &&
-                                    _shopsInfo[shopId]!['mapY'] != null &&
+                                if (_shopsInfo[shopId]!['map_x'] != null &&
+                                    _shopsInfo[shopId]!['map_y'] != null &&
                                     _heatData.containsKey(shopId))
                                   Positioned(
-                                    left: _shopsInfo[shopId]!['mapX'] * imageWidth * scale + offsetX - 20,
-                                    top: _shopsInfo[shopId]!['mapY'] * imageHeight * scale + offsetY - 20,
+                                    left: (_shopsInfo[shopId]!['map_x'] as num) *
+                                            imageWidth *
+                                            scale +
+                                        offsetX -
+                                        20,
+                                    top: (_shopsInfo[shopId]!['map_y'] as num) *
+                                            imageHeight *
+                                            scale +
+                                        offsetY -
+                                        20,
                                     child: Container(
                                       width: 40,
                                       height: 40,
@@ -260,7 +270,10 @@ class _ExtendedAnalyticsScreenState extends State<ExtendedAnalyticsScreen> {
                                       child: Center(
                                         child: Text(
                                           '${_heatData[shopId]}',
-                                          style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold),
+                                          style: const TextStyle(
+                                            fontSize: 10,
+                                            fontWeight: FontWeight.bold,
+                                          ),
                                         ),
                                       ),
                                     ),
@@ -273,7 +286,6 @@ class _ExtendedAnalyticsScreenState extends State<ExtendedAnalyticsScreen> {
                     const SizedBox(height: 24),
                   ],
 
-                  // Таблица сравнения магазинов
                   const Text('Сравнение магазинов',
                       style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
                   const SizedBox(height: 8),

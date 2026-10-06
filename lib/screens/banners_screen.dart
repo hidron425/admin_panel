@@ -1,12 +1,12 @@
 import 'package:flutter/material.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:supabase_flutter/supabase_flutter.dart' as supa;
 import 'dart:math' as math;
 import 'dart:async';
 import 'package:admin_panel/utils/audit.dart';
-import 'package:admin_panel/utils/app_state.dart';   // 🆕 глобальное состояние
+import 'package:admin_panel/utils/app_state.dart';
 
 // ----------------------------------------------------------------------
-// Модель BannerAd (локальная, чтобы не зависеть от других файлов)
+// Модель BannerAd
 // ----------------------------------------------------------------------
 class BannerAd {
   final String id;
@@ -17,7 +17,7 @@ class BannerAd {
   final String discount;
   final String mallId;
   final String imageUrl;
-  final List<double>? cropRectData;   // [left, top, width, height]
+  final List<double>? cropRectData;
   final int priority;
   final bool isActive;
 
@@ -35,35 +35,44 @@ class BannerAd {
     this.isActive = true,
   });
 
-  factory BannerAd.fromFirestore(DocumentSnapshot doc) {
-    final data = doc.data() as Map<String, dynamic>;
-
+  factory BannerAd.fromSupabase(Map<String, dynamic> json) {
     int colorInt = 0xFF6C63FF;
-    final rawColor = data['color'];
+    final rawColor = json['color'];
     if (rawColor is int) {
       colorInt = rawColor;
+    } else if (rawColor is num) {
+      colorInt = rawColor.toInt();
     } else if (rawColor is String) {
-      final hex = rawColor.replaceAll('#', '');
-      final parsed = int.tryParse(hex, radix: 16);
-      if (parsed != null) {
-        colorInt = hex.length == 6 ? 0xFF000000 | parsed : parsed;
+      final asDecimal = int.tryParse(rawColor);
+      if (asDecimal != null) {
+        colorInt = asDecimal;
+      } else {
+        final hex = rawColor.replaceAll('#', '');
+        final parsed = int.tryParse(hex, radix: 16);
+        if (parsed != null) {
+          colorInt = hex.length == 6 ? 0xFF000000 | parsed : parsed;
+        }
       }
     }
 
+    final rawId = json['firestore_id'] ?? json['id'] ?? '';
+    final id = rawId is String ? rawId : rawId.toString();
+
     return BannerAd(
-      id: doc.id,
-      title: data['title'] as String? ?? '',
-      description: data['description'] as String? ?? '',
+      id: id,
+      title: (json['title'] as String?) ?? '',
+      description: (json['description'] as String?) ?? '',
       color: colorInt,
-      targetShopId: data['targetShopId'] as String? ?? '',
-      discount: data['discount'] as String? ?? '',
-      mallId: data['mallId'] as String? ?? '',
-      imageUrl: data['imageUrl'] as String? ?? '',
-      cropRectData: (data['cropRect'] as List?)
-          ?.map((e) => (e as num).toDouble())
+      targetShopId: (json['target_shop_id'] as String?) ?? '',
+      discount: (json['discount'] as String?) ?? '',
+      mallId: (json['mall_id'] as String?) ?? '',
+      imageUrl: (json['image_url'] as String?) ?? '',
+      cropRectData: (json['crop_rect'] as List?)
+          ?.whereType<num>()
+          .map((e) => e.toDouble())
           .toList(),
-      priority: (data['priority'] as num?)?.toInt() ?? 0,
-      isActive: data['isActive'] as bool? ?? true,
+      priority: (json['priority'] as num?)?.toInt() ?? 0,
+      isActive: (json['is_active'] as bool?) ?? true,
     );
   }
 }
@@ -79,7 +88,8 @@ class BannersScreen extends StatefulWidget {
 }
 
 class _BannersScreenState extends State<BannersScreen> {
-  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  supa.SupabaseClient get _sb => supa.Supabase.instance.client;
+
   final TextEditingController _searchController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
 
@@ -87,11 +97,11 @@ class _BannersScreenState extends State<BannersScreen> {
   List<BannerAd> _filteredBanners = [];
   Map<String, Map<String, dynamic>> _shopCache = {};
   bool _isLoading = true;
-  String _sortBy = 'createdAt';
+  String _sortBy = 'created_at';
   bool _sortAsc = false;
   String? _hoveredId;
 
-  String? _selectedMallId;   // 🆕 текущий выбранный ТЦ
+  String? _selectedMallId;
 
   @override
   void initState() {
@@ -120,23 +130,25 @@ class _BannersScreenState extends State<BannersScreen> {
   Future<void> _loadBanners() async {
     setState(() => _isLoading = true);
     try {
-      Query bannersQuery = _firestore.collection('banners');
+      var query = _sb.from('banners').select();
       if (_selectedMallId != null) {
-        bannersQuery = bannersQuery.where('mallId', isEqualTo: _selectedMallId);
+        query = query.eq('mall_id', _selectedMallId!);
       }
-      final snapshot = await bannersQuery
-          .orderBy(_sortBy, descending: !_sortAsc)
-          .get();
-      final banners = snapshot.docs.map((doc) => BannerAd.fromFirestore(doc)).toList();
+      final data = await query.order(_sortBy, ascending: _sortAsc);
+      final banners = (data as List)
+          .map((json) => BannerAd.fromSupabase(Map<String, dynamic>.from(json)))
+          .toList();
       await _preloadShops(banners);
-      setState(() {
-        _banners = banners;
-        _applyFilter();
-        _isLoading = false;
-      });
+      if (mounted) {
+        setState(() {
+          _banners = banners;
+          _applyFilter();
+          _isLoading = false;
+        });
+      }
     } catch (e) {
       debugPrint('❌ Ошибка загрузки баннеров: $e');
-      setState(() => _isLoading = false);
+      if (mounted) setState(() => _isLoading = false);
     }
   }
 
@@ -150,10 +162,14 @@ class _BannersScreenState extends State<BannersScreen> {
     }
     if (shopIds.isEmpty) return;
     final futures = shopIds.map((id) async {
-      final doc = await _firestore.collection('shops').doc(id).get();
-      if (doc.exists) {
-        _shopCache[id] = doc.data()!;
-        _shopCache[id]!['id'] = id;
+      final data = await _sb
+          .from('shops')
+          .select()
+          .eq('firestore_id', id)
+          .maybeSingle();
+      if (data != null) {
+        _shopCache[id] = Map<String, dynamic>.from(data);
+        _shopCache[id]!['firestore_id'] = id;
       }
     });
     await Future.wait(futures);
@@ -200,23 +216,25 @@ class _BannersScreenState extends State<BannersScreen> {
         content: const Text('Это действие нельзя отменить.'),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Отмена')),
-          TextButton(onPressed: () => Navigator.pop(ctx, true), style: TextButton.styleFrom(foregroundColor: Colors.red), child: const Text('Удалить')),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: TextButton.styleFrom(foregroundColor: Colors.red),
+            child: const Text('Удалить'),
+          ),
         ],
       ),
     );
     if (confirm != true) return;
     try {
-      await _firestore.collection('banners').doc(id).delete();
-      AuditLogger.log(
-        action: 'delete',
-        collection: 'banners',
-        docId: id,
-      );
-      setState(() {
-        _banners.removeWhere((b) => b.id == id);
-        _applyFilter();
-      });
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Баннер удалён')));
+      await _sb.from('banners').delete().eq('firestore_id', id);
+      AuditLogger.log(action: 'delete', collection: 'banners', docId: id);
+      if (mounted) {
+        setState(() {
+          _banners.removeWhere((b) => b.id == id);
+          _applyFilter();
+        });
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Баннер удалён')));
+      }
     } catch (e) {
       debugPrint('❌ Ошибка удаления баннера: $e');
     }
@@ -224,33 +242,35 @@ class _BannersScreenState extends State<BannersScreen> {
 
   Future<void> _toggleActive(String id, bool current) async {
     try {
-      await _firestore.collection('banners').doc(id).update({'isActive': !current});
+      await _sb.from('banners').update({'is_active': !current}).eq('firestore_id', id);
       AuditLogger.log(
         action: 'update',
         collection: 'banners',
         docId: id,
-        changes: {'isActive': !current},
+        changes: {'is_active': !current},
       );
-      setState(() {
-        final idx = _banners.indexWhere((b) => b.id == id);
-        if (idx != -1) {
-          final old = _banners[idx];
-          _banners[idx] = BannerAd(
-            id: old.id,
-            title: old.title,
-            description: old.description,
-            color: old.color,
-            targetShopId: old.targetShopId,
-            discount: old.discount,
-            mallId: old.mallId,
-            imageUrl: old.imageUrl,
-            cropRectData: old.cropRectData,
-            priority: old.priority,
-            isActive: !current,
-          );
-          _applyFilter();
-        }
-      });
+      if (mounted) {
+        setState(() {
+          final idx = _banners.indexWhere((b) => b.id == id);
+          if (idx != -1) {
+            final old = _banners[idx];
+            _banners[idx] = BannerAd(
+              id: old.id,
+              title: old.title,
+              description: old.description,
+              color: old.color,
+              targetShopId: old.targetShopId,
+              discount: old.discount,
+              mallId: old.mallId,
+              imageUrl: old.imageUrl,
+              cropRectData: old.cropRectData,
+              priority: old.priority,
+              isActive: !current,
+            );
+            _applyFilter();
+          }
+        });
+      }
     } catch (e) {
       debugPrint('❌ Ошибка переключения: $e');
     }
@@ -263,7 +283,7 @@ class _BannersScreenState extends State<BannersScreen> {
         builder: (_) => BannerEditorScreen(
           banner: banner,
           onSaved: _loadBanners,
-          mallId: _selectedMallId,   // 🆕 передаём выбранный ТЦ
+          mallId: _selectedMallId,
         ),
       ),
     );
@@ -284,7 +304,7 @@ class _BannersScreenState extends State<BannersScreen> {
             tooltip: 'Сортировка',
             onSelected: _changeSort,
             itemBuilder: (_) => [
-              _sortItem('createdAt', 'По дате создания'),
+              _sortItem('created_at', 'По дате создания'),
               _sortItem('title', 'По названию'),
               _sortItem('priority', 'По приоритету'),
               _sortItem('discount', 'По скидке'),
@@ -402,7 +422,7 @@ class _BannersScreenState extends State<BannersScreen> {
 }
 
 // ----------------------------------------------------------------------
-// _BannerCard (без изменений)
+// _BannerCard
 // ----------------------------------------------------------------------
 class _BannerCard extends StatelessWidget {
   final BannerAd banner;
@@ -553,9 +573,7 @@ class _BannerCard extends StatelessWidget {
                 ),
               if (!isActive)
                 Positioned(
-                  top: 0,
-                  left: 0,
-                  right: 0,
+                  top: 0, left: 0, right: 0,
                   child: Container(height: 4, color: Colors.red.shade400),
                 ),
             ],
@@ -579,12 +597,12 @@ class _BannerCard extends StatelessWidget {
 }
 
 // ----------------------------------------------------------------------
-// BannerEditorScreen – редактор баннера (с поддержкой mallId)
+// BannerEditorScreen
 // ----------------------------------------------------------------------
 class BannerEditorScreen extends StatefulWidget {
   final BannerAd? banner;
   final VoidCallback? onSaved;
-  final String? mallId;   // 🆕 выбранный ТЦ
+  final String? mallId;
 
   const BannerEditorScreen({
     super.key,
@@ -598,8 +616,9 @@ class BannerEditorScreen extends StatefulWidget {
 }
 
 class _BannerEditorScreenState extends State<BannerEditorScreen> {
+  supa.SupabaseClient get _sb => supa.Supabase.instance.client;
+
   final _formKey = GlobalKey<FormState>();
-  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
 
   late TextEditingController _titleCtrl;
   late TextEditingController _descCtrl;
@@ -649,23 +668,24 @@ class _BannerEditorScreenState extends State<BannerEditorScreen> {
     _debounce = Timer(const Duration(milliseconds: 350), () async {
       final query = _shopSearchCtrl.text.trim();
       if (query.length < 2) {
-        setState(() => _shopResults.clear());
+        if (mounted) setState(() => _shopResults.clear());
         return;
       }
       try {
-        final snap = await _firestore
-            .collection('shops')
-            .where('name', isGreaterThanOrEqualTo: query)
-            .where('name', isLessThanOrEqualTo: '$query\uf8ff')
-            .limit(8)
-            .get();
-        setState(() {
-          _shopResults = snap.docs.map((d) {
-            final data = d.data();
-            data['id'] = d.id;
-            return data;
-          }).toList();
-        });
+        final data = await _sb
+            .from('shops')
+            .select()
+            .ilike('name', '%$query%')
+            .limit(8);
+        if (mounted) {
+          setState(() {
+            _shopResults = (data as List).map((d) {
+              final m = Map<String, dynamic>.from(d);
+              m['id'] = m['firestore_id'];
+              return m;
+            }).toList();
+          });
+        }
       } catch (_) {}
     });
   }
@@ -673,47 +693,44 @@ class _BannerEditorScreenState extends State<BannerEditorScreen> {
   Future<void> _saveBanner() async {
     if (!_formKey.currentState!.validate()) return;
     setState(() => _isSaving = true);
+
     final data = <String, dynamic>{
       'title': _titleCtrl.text.trim(),
       'description': _descCtrl.text.trim(),
       'discount': _discountCtrl.text.trim(),
       'color': _selectedColor.value,
       'priority': _priority,
-      'imageUrl': _imageUrlCtrl.text.trim(),
-      'isActive': _isActive,
-      'cropRect': _cropRectData,
+      'image_url': _imageUrlCtrl.text.trim(),
+      'is_active': _isActive,
+      'crop_rect': _cropRectData,
     };
+
     if (_selectedShop != null) {
-      data['targetShopId'] = _selectedShop!['id'];
-      data['shopName'] = _selectedShop!['name'];
-      // 🆕 Если у выбранного магазина есть mallId, используем его
-      data['mallId'] = _selectedShop!['mallId'] ?? widget.mallId;
+      data['target_shop_id'] = _selectedShop!['firestore_id'] ?? _selectedShop!['id'];
+      data['mall_id'] = _selectedShop!['mall_id'] ?? widget.mallId;
     } else if (_isEditing) {
-      data['targetShopId'] = widget.banner!.targetShopId;
-      data['mallId'] = widget.banner!.mallId;
+      data['target_shop_id'] = widget.banner!.targetShopId;
+      data['mall_id'] = widget.banner!.mallId;
     } else {
-      // 🆕 Новый баннер без привязки к магазину – берём выбранный ТЦ
-      data['mallId'] = widget.mallId;
+      data['mall_id'] = widget.mallId;
     }
+
     try {
       String action;
       String docId;
       if (_isEditing) {
-        await _firestore.collection('banners').doc(widget.banner!.id).update(data);
+        await _sb.from('banners').update(data).eq('firestore_id', widget.banner!.id);
         action = 'update';
         docId = widget.banner!.id;
       } else {
-        data['createdAt'] = FieldValue.serverTimestamp();
-        final docRef = await _firestore.collection('banners').add(data);
+        final newId = DateTime.now().millisecondsSinceEpoch.toString();
+        data['firestore_id'] = newId;
+        data['created_at'] = DateTime.now().toIso8601String();
+        await _sb.from('banners').insert(data);
         action = 'create';
-        docId = docRef.id;
+        docId = newId;
       }
-      AuditLogger.log(
-        action: action,
-        collection: 'banners',
-        docId: docId,
-        changes: data,
-      );
+      AuditLogger.log(action: action, collection: 'banners', docId: docId, changes: data);
       widget.onSaved?.call();
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(_isEditing ? 'Баннер обновлён' : 'Баннер создан')));
@@ -721,7 +738,7 @@ class _BannerEditorScreenState extends State<BannerEditorScreen> {
       }
     } catch (e) {
       debugPrint('❌ Ошибка сохранения: $e');
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Ошибка сохранения')));
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Ошибка сохранения: $e')));
     } finally {
       if (mounted) setState(() => _isSaving = false);
     }
@@ -757,7 +774,6 @@ class _BannerEditorScreenState extends State<BannerEditorScreen> {
     }
   }
 
-  // ======================== ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ UI ========================
   Widget _sectionTitle(String text) {
     return Text(text, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: Colors.black54, letterSpacing: 0.5));
   }
@@ -953,7 +969,9 @@ class _BannerEditorScreenState extends State<BannerEditorScreen> {
         actions: [
           TextButton.icon(
             onPressed: _isSaving ? null : _saveBanner,
-            icon: _isSaving ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Icon(Icons.check_rounded),
+            icon: _isSaving
+                ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                : const Icon(Icons.check_rounded),
             label: const Text('Сохранить'),
           ),
         ],
@@ -1020,15 +1038,12 @@ class _BannerEditorScreenState extends State<BannerEditorScreen> {
 }
 
 // ----------------------------------------------------------------------
-// _BannerItemPreview – заглушка для предпросмотра в редакторе
+// _BannerItemPreview
 // ----------------------------------------------------------------------
 class _BannerItemPreview extends StatelessWidget {
   final BannerAd banner;
 
-  const _BannerItemPreview({
-    Key? key,
-    required this.banner,
-  }) : super(key: key);
+  const _BannerItemPreview({Key? key, required this.banner}) : super(key: key);
 
   @override
   Widget build(BuildContext context) {
@@ -1060,10 +1075,7 @@ class _BannerItemPreview extends StatelessWidget {
             child: Container(
               decoration: BoxDecoration(
                 gradient: LinearGradient(
-                  colors: [
-                    Color(banner.color),
-                    Color(banner.color).withOpacity(0.75),
-                  ],
+                  colors: [Color(banner.color), Color(banner.color).withOpacity(0.75)],
                   begin: Alignment.topLeft,
                   end: Alignment.bottomRight,
                 ),
@@ -1077,10 +1089,7 @@ class _BannerItemPreview extends StatelessWidget {
                 gradient: LinearGradient(
                   begin: Alignment.centerLeft,
                   end: Alignment.centerRight,
-                  colors: [
-                    Colors.black.withOpacity(0.55),
-                    Colors.black.withOpacity(0.12),
-                  ],
+                  colors: [Colors.black.withOpacity(0.55), Colors.black.withOpacity(0.12)],
                 ),
               ),
             ),
@@ -1134,7 +1143,7 @@ class _BannerItemPreview extends StatelessWidget {
 }
 
 // ----------------------------------------------------------------------
-// _ImageEditorDialog – редактор изображения баннера (без изменений)
+// _ImageEditorDialog – БЕЗ ИЗМЕНЕНИЙ (использует только Flutter, не Firebase)
 // ----------------------------------------------------------------------
 class _ImageEditorDialog extends StatefulWidget {
   final String title;
@@ -1402,7 +1411,7 @@ class _ImageEditorDialogState extends State<_ImageEditorDialog> {
 }
 
 // ----------------------------------------------------------------------
-// Рисовальщики (без изменений)
+// Рисовальщики — БЕЗ ИЗМЕНЕНИЙ
 // ----------------------------------------------------------------------
 class _DashedBorderPainter extends CustomPainter {
   @override
@@ -1439,7 +1448,7 @@ class _OverlayPainter extends CustomPainter {
 }
 
 // ----------------------------------------------------------------------
-// Диалог выбора цвета (без изменений)
+// Диалог выбора цвета — БЕЗ ИЗМЕНЕНИЙ
 // ----------------------------------------------------------------------
 Future<Color?> showColorPickerDialog(BuildContext context, Color current) {
   final presetColors = [
@@ -1489,7 +1498,7 @@ Future<Color?> showColorPickerDialog(BuildContext context, Color current) {
 }
 
 // ----------------------------------------------------------------------
-// BannerImagePreview – универсальный виджет для обрезки (без изменений)
+// BannerImagePreview — БЕЗ ИЗМЕНЕНИЙ
 // ----------------------------------------------------------------------
 class BannerImagePreview extends StatefulWidget {
   final String imageUrl;
@@ -1535,32 +1544,19 @@ class _BannerImagePreviewState extends State<BannerImagePreview> {
         .addListener(ImageStreamListener((info, _) {
       if (mounted) {
         setState(() {
-          _imageSize = Size(
-            info.image.width.toDouble(),
-            info.image.height.toDouble(),
-          );
+          _imageSize = Size(info.image.width.toDouble(), info.image.height.toDouble());
         });
       }
     }));
   }
 
   Widget _buildWithSize(double maxW, double maxH) {
-    if (widget.cropRect == null ||
-        widget.cropRect!.isEmpty ||
-        widget.cropRect!.width == 0 ||
-        _imageSize == null) {
-      return Image.network(
-        widget.imageUrl,
-        fit: BoxFit.cover,
-        width: maxW,
-        height: maxH,
-        errorBuilder: (_, __, ___) => Container(color: Colors.grey[300]),
-      );
-    }
-
+  if (widget.cropRect != null &&
+      !widget.cropRect!.isEmpty &&
+      widget.cropRect!.width > 0 &&
+      _imageSize != null) {
     final crop = widget.cropRect!;
     final previewScale = maxW / crop.width;
-
     return ClipRect(
       child: Stack(
         children: [
@@ -1579,6 +1575,19 @@ class _BannerImagePreviewState extends State<BannerImagePreview> {
       ),
     );
   }
+
+  return SizedBox(
+    width: maxW,
+    height: maxH,
+    child: Image.network(
+      widget.imageUrl,
+      fit: BoxFit.cover,
+      width: maxW,
+      height: maxH,
+      errorBuilder: (_, __, ___) => Container(color: Colors.grey[300]),
+    ),
+  );
+}
 
   @override
   Widget build(BuildContext context) {
