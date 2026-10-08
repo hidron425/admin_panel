@@ -396,9 +396,9 @@ class _UserManagementScreenState extends State<UserManagementScreen>
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text(_selectedMallId == null
+                title: Text(_selectedMallId == null
             ? 'Управление пользователями (Все ТЦ)'
-            : 'Управление пользователями (${_selectedMallId})'),
+            : 'Управление пользователями ($_selectedMallId)'),
         bottom: TabBar(
           controller: _tabController,
           tabs: const [

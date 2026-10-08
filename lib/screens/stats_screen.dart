@@ -247,12 +247,13 @@ class _StatsScreenState extends State<StatsScreen> with SingleTickerProviderStat
                 ? 'Статистика (Все ТЦ)'
                 : 'Статистика (${_selectedMallId})'),
         bottom: TabBar(
-          controller: _tabController,
-          tabs: const [
-            Tab(text: '📊 Статистика'),
-            Tab(text: '📋 История'),
-          ],
-        ),
+  controller: _tabController,
+  labelStyle: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14),
+  tabs: const [
+    Tab(icon: Icon(Icons.bar_chart), text: 'Статистика'),
+    Tab(icon: Icon(Icons.history), text: 'История'),
+  ],
+),
       ),
       body: TabBarView(
         controller: _tabController,
@@ -264,122 +265,237 @@ class _StatsScreenState extends State<StatsScreen> with SingleTickerProviderStat
     );
   }
 
-  Widget _buildStatsTab() {
+    Widget _buildStatsTab() {
     return SingleChildScrollView(
       padding: const EdgeInsets.all(16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
+      child: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 1100),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text('Период: '),
-              DropdownButton<String>(
-                value: _period,
-                items: const [
-                  DropdownMenuItem(value: 'today', child: Text('Сегодня')),
-                  DropdownMenuItem(value: 'week', child: Text('Неделя')),
-                  DropdownMenuItem(value: 'month', child: Text('Месяц')),
+              // Период
+              Row(
+                children: [
+                  const Text('Период: ', style: TextStyle(fontWeight: FontWeight.w600)),
+                  const SizedBox(width: 8),
+                  DropdownButton<String>(
+                    value: _period,
+                    items: const [
+                      DropdownMenuItem(value: 'today', child: Text('Сегодня')),
+                      DropdownMenuItem(value: 'week', child: Text('Неделя')),
+                      DropdownMenuItem(value: 'month', child: Text('Месяц')),
+                    ],
+                    onChanged: (value) {
+                      if (value != null) {
+                        setState(() => _period = value);
+                        _loadStats();
+                      }
+                    },
+                  ),
                 ],
-                onChanged: (value) {
-                  if (value != null) {
-                    setState(() => _period = value);
-                    _loadStats();
+              ),
+              const SizedBox(height: 20),
+
+              // Три метрики в ряд
+              LayoutBuilder(
+                builder: (context, constraints) {
+                  final isNarrow = constraints.maxWidth < 700;
+                  final cards = [
+                    _buildMetricCard(
+                      icon: Icons.shopping_cart_outlined,
+                      label: 'Первые продажи',
+                      sublabel: 'начало пути',
+                      value: _firstSales,
+                      color: Colors.blue,
+                    ),
+                    _buildMetricCard(
+                      icon: Icons.replay,
+                      label: 'Вторичные продажи',
+                      sublabel: '2+ шаг',
+                      value: _secondarySales,
+                      color: Colors.orange,
+                    ),
+                    _buildMetricCard(
+                      icon: Icons.trending_up,
+                      label: 'Всего продаж',
+                      sublabel: 'за период',
+                      value: _totalSales,
+                      color: Colors.green,
+                    ),
+                  ];
+
+                  if (isNarrow) {
+                    return Column(
+                      children: cards
+                          .map((c) => Padding(
+                                padding: const EdgeInsets.only(bottom: 12),
+                                child: c,
+                              ))
+                          .toList(),
+                    );
                   }
+
+                  return Row(
+                    children: [
+                      for (int i = 0; i < cards.length; i++) ...[
+                        Expanded(child: cards[i]),
+                        if (i < cards.length - 1) const SizedBox(width: 12),
+                      ],
+                    ],
+                  );
                 },
+              ),
+
+              const SizedBox(height: 32),
+
+              // График
+              const Text('График активности',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 16),
+              Card(
+                elevation: 2,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: _dailySales.isEmpty
+                      ? const SizedBox(
+                          height: 220,
+                          child: Center(
+                            child: Text('Нет данных за выбранный период',
+                                style: TextStyle(color: Colors.grey)),
+                          ),
+                        )
+                      : SizedBox(
+                          height: 280,
+                          child: BarChart(
+                            BarChartData(
+                              alignment: BarChartAlignment.spaceAround,
+                              maxY: (_dailySales
+                                          .map((e) => e['count'] as int)
+                                          .reduce((a, b) => a > b ? a : b)
+                                          .toDouble() +
+                                      1)
+                                  .clamp(1, double.infinity),
+                              barGroups: _dailySales.asMap().entries.map((entry) {
+                                final idx = entry.key;
+                                final data = entry.value;
+                                return BarChartGroupData(
+                                  x: idx,
+                                  barRods: [
+                                    BarChartRodData(
+                                      toY: (data['count'] as int).toDouble(),
+                                      color: Theme.of(context).primaryColor,
+                                      width: 22,
+                                      borderRadius: BorderRadius.circular(6),
+                                    ),
+                                  ],
+                                );
+                              }).toList(),
+                              titlesData: FlTitlesData(
+                                bottomTitles: AxisTitles(
+                                  sideTitles: SideTitles(
+                                    showTitles: true,
+                                    getTitlesWidget: (value, meta) {
+                                      final idx = value.toInt();
+                                      if (idx >= 0 && idx < _dailySales.length) {
+                                        final day = _dailySales[idx]['day'] as String;
+                                        return Padding(
+                                          padding: const EdgeInsets.only(top: 6),
+                                          child: Text(
+                                            day.length >= 5 ? day.substring(5) : day,
+                                            style: const TextStyle(fontSize: 10),
+                                          ),
+                                        );
+                                      }
+                                      return const SizedBox.shrink();
+                                    },
+                                    reservedSize: 40,
+                                  ),
+                                ),
+                                leftTitles: AxisTitles(
+                                  sideTitles: SideTitles(
+                                      showTitles: true, reservedSize: 40),
+                                ),
+                                topTitles: const AxisTitles(
+                                    sideTitles: SideTitles(showTitles: false)),
+                                rightTitles: const AxisTitles(
+                                    sideTitles: SideTitles(showTitles: false)),
+                              ),
+                              gridData: const FlGridData(show: true, drawVerticalLine: false),
+                              borderData: FlBorderData(show: false),
+                            ),
+                          ),
+                        ),
+                ),
               ),
             ],
           ),
-          const SizedBox(height: 20),
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text('Первые продажи (начало пути)', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-                  const SizedBox(height: 8),
-                  Text('$_firstSales', style: const TextStyle(fontSize: 24)),
-                ],
-              ),
-            ),
-          ),
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text('Вторичные продажи (2+ шаг)', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-                  const SizedBox(height: 8),
-                  Text('$_secondarySales', style: const TextStyle(fontSize: 24)),
-                ],
-              ),
-            ),
-          ),
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text('Всего продаж', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-                  const SizedBox(height: 8),
-                  Text('$_totalSales', style: const TextStyle(fontSize: 32, fontWeight: FontWeight.bold)),
-                ],
-              ),
-            ),
-          ),
-          const SizedBox(height: 20),
-          const Text('График активности', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-          const SizedBox(height: 16),
-          _dailySales.isEmpty
-              ? const Text('Нет данных')
-              : SizedBox(
-                  height: 250,
-                  child: BarChart(
-                    BarChartData(
-                      alignment: BarChartAlignment.spaceAround,
-                      maxY: (_dailySales.map((e) => e['count'] as int).reduce((a, b) => a > b ? a : b).toDouble() + 1).clamp(1, double.infinity),
-                      barGroups: _dailySales.asMap().entries.map((entry) {
-                        final idx = entry.key;
-                        final data = entry.value;
-                        return BarChartGroupData(
-                          x: idx,
-                          barRods: [
-                            BarChartRodData(
-                              toY: (data['count'] as int).toDouble(),
-                              color: Theme.of(context).primaryColor,
-                              width: 30,
-                            ),
-                          ],
-                        );
-                      }).toList(),
-                      titlesData: FlTitlesData(
-                        bottomTitles: AxisTitles(
-                          sideTitles: SideTitles(
-                            showTitles: true,
-                            getTitlesWidget: (value, meta) {
-                              final idx = value.toInt();
-                              if (idx >= 0 && idx < _dailySales.length) {
-                                return Text(_dailySales[idx]['day'], style: const TextStyle(fontSize: 10));
-                              }
-                              return const Text('');
-                            },
-                            reservedSize: 40,
-                          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildMetricCard({
+    required IconData icon,
+    required String label,
+    required String sublabel,
+    required int value,
+    required Color color,
+  }) {
+    return Card(
+      elevation: 2,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Container(
+                  width: 40,
+                  height: 40,
+                  decoration: BoxDecoration(
+                    color: color.withOpacity(0.15),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Icon(icon, color: color, size: 22),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        label,
+                        style: const TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                          color: Colors.black87,
                         ),
-                        leftTitles: AxisTitles(
-                          sideTitles: SideTitles(showTitles: true, reservedSize: 40),
-                        ),
-                        topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-                        rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
                       ),
-                      gridData: const FlGridData(show: true),
-                      borderData: FlBorderData(show: true),
-                    ),
+                      Text(
+                        sublabel,
+                        style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
+                      ),
+                    ],
                   ),
                 ),
-        ],
+              ],
+            ),
+            const SizedBox(height: 16),
+            Text(
+              '$value',
+              style: TextStyle(
+                fontSize: 32,
+                fontWeight: FontWeight.bold,
+                color: color,
+                height: 1.0,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

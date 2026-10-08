@@ -314,7 +314,7 @@ class _BonusRulesScreenState extends State<BonusRulesScreen> {
             ? 'Бонусные правила (Все ТЦ)'
             : 'Бонусные правила (${_selectedMallId})'),
         leading: IconButton(
-          icon: const Icon(Icons.add, color: Color(0xFF6C63FF)),
+          icon: const Icon(Icons.add, color: Color(0xFF2E7BFF)),
           tooltip: 'Добавить правило',
           onPressed: () => _showRuleDialog(),
         ),

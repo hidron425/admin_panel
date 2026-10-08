@@ -36,7 +36,7 @@ class BannerAd {
   });
 
   factory BannerAd.fromSupabase(Map<String, dynamic> json) {
-    int colorInt = 0xFF6C63FF;
+    int colorInt = 0xFF2E7BFF;
     final rawColor = json['color'];
     if (rawColor is int) {
       colorInt = rawColor;
@@ -292,7 +292,7 @@ class _BannersScreenState extends State<BannersScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFFF5F5F8),
+      backgroundColor: const Color(0xFFFFFFFF),
       appBar: AppBar(
         title: const Text('Управление баннерами', style: TextStyle(fontWeight: FontWeight.w700)),
         backgroundColor: Colors.white,
@@ -317,7 +317,7 @@ class _BannersScreenState extends State<BannersScreen> {
         onPressed: () => _openEditor(),
         icon: const Icon(Icons.add_rounded),
         label: const Text('Новый баннер'),
-        backgroundColor: const Color(0xFF6C63FF),
+        backgroundColor: const Color(0xFF2E7BFF),
         foregroundColor: Colors.white,
       ),
       body: Column(
@@ -343,7 +343,7 @@ class _BannersScreenState extends State<BannersScreen> {
           const SizedBox(height: 4),
           Expanded(
             child: _isLoading
-                ? const Center(child: CircularProgressIndicator(color: Color(0xFF6C63FF)))
+                ? const Center(child: CircularProgressIndicator(color: Color(0xFF2E7BFF)))
                 : _filteredBanners.isEmpty
                     ? _buildEmptyState()
                     : _buildBannerGrid(),
@@ -361,7 +361,7 @@ class _BannersScreenState extends State<BannersScreen> {
           Text(label),
           if (_sortBy == value) ...[
             const SizedBox(width: 6),
-            Icon(_sortAsc ? Icons.arrow_upward : Icons.arrow_downward, size: 16, color: const Color(0xFF6C63FF)),
+            Icon(_sortAsc ? Icons.arrow_upward : Icons.arrow_downward, size: 16, color: const Color(0xFF2E7BFF)),
           ],
         ],
       ),
@@ -626,7 +626,7 @@ class _BannerEditorScreenState extends State<BannerEditorScreen> {
   late TextEditingController _imageUrlCtrl;
   late TextEditingController _shopSearchCtrl;
 
-  Color _selectedColor = const Color(0xFF6C63FF);
+  Color _selectedColor = const Color(0xFF2E7BFF);
   int _priority = 0;
   bool _isActive = true;
   Map<String, dynamic>? _selectedShop;
@@ -805,12 +805,12 @@ class _BannerEditorScreenState extends State<BannerEditorScreen> {
             margin: const EdgeInsets.only(bottom: 8),
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
             decoration: BoxDecoration(
-              color: const Color(0xFF6C63FF).withOpacity(0.1),
+              color: const Color(0xFF2E7BFF).withOpacity(0.1),
               borderRadius: BorderRadius.circular(12),
             ),
             child: Row(
               children: [
-                const Icon(Icons.store_rounded, color: Color(0xFF6C63FF)),
+                const Icon(Icons.store_rounded, color: Color(0xFF2E7BFF)),
                 const SizedBox(width: 8),
                 Expanded(child: Text(_selectedShop!['name'] ?? '', style: const TextStyle(fontWeight: FontWeight.w600))),
                 GestureDetector(
@@ -960,7 +960,7 @@ class _BannerEditorScreenState extends State<BannerEditorScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFFF5F5F8),
+      backgroundColor: const Color(0xFFFFFFFF),
       appBar: AppBar(
         title: Text(_isEditing ? 'Редактировать баннер' : 'Новый баннер'),
         backgroundColor: Colors.white,
@@ -1452,7 +1452,7 @@ class _OverlayPainter extends CustomPainter {
 // ----------------------------------------------------------------------
 Future<Color?> showColorPickerDialog(BuildContext context, Color current) {
   final presetColors = [
-    0xFF6C63FF, 0xFFFF6B6B, 0xFF4ECDC4, 0xFFFFD93D, 0xFFFF8C42,
+    0xFF2E7BFF, 0xFFFF6B6B, 0xFF4ECDC4, 0xFFFFD93D, 0xFFFF8C42,
     0xFF45B7D1, 0xFF96CEB4, 0xFFFF69B4, 0xFF7B68EE, 0xFF20B2AA,
     0xFFDC143C, 0xFF2E4057,
   ];

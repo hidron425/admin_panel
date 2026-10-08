@@ -327,7 +327,7 @@ class _PushNotificationScreenState extends State<PushNotificationScreen> {
                     : const Icon(Icons.send),
                 label: Text(_scheduled ? 'Запланировать' : 'Отправить'),
                 style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFF6C63FF),
+                  backgroundColor: const Color(0xFF2E7BFF),
                   foregroundColor: Colors.white,
                   padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 14),
                 ),

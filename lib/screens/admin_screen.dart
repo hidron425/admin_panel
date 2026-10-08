@@ -17,6 +17,7 @@ import 'extended_analytics_screen.dart';
 import 'package:admin_panel/utils/app_state.dart';
 import 'debug_logs_screen.dart';
 import 'bonus_scanner_screen.dart';
+import 'zone_editor_screen.dart';
 
 class AdminScreen extends StatefulWidget {
   final String userEmail;
@@ -53,6 +54,7 @@ class _AdminScreenState extends State<AdminScreen> {
       const AnalyticsScreen(),
       const ExtendedAnalyticsScreen(),
       const BonusScannerScreen(),
+      const ZoneEditorScreen(), 
     ];
     _loadUserRole();
   }
@@ -143,8 +145,10 @@ class _AdminScreenState extends State<AdminScreen> {
   }
 
   void setPage(int index) {
-    if (!mounted) return;
-    setState(() => _selectedIndex = index);
+  if (!mounted) return;
+  // Редактор зон — только для агрегатора
+  if (index == 14 && !_isAggregator) return;
+  setState(() => _selectedIndex = index);
     if (_scaffoldKey.currentState?.isDrawerOpen ?? false) {
       _scaffoldKey.currentState?.closeDrawer();
     }
@@ -303,40 +307,47 @@ class _AdminScreenState extends State<AdminScreen> {
                 ],
               ),
             ),
-            if (_isAggregator)
-              ListTile(
-                leading: const Icon(Icons.home),
-                title: const Text('Главная'),
-                selected: _selectedIndex == -1,
-                onTap: () => setPage(-1),
-              ),
-            if (!_isAggregator)
+                        // ---------- Общие пункты для всех ----------
+            if (!_isAggregator) ...[
               ListTile(
                 leading: const Icon(Icons.store),
                 title: const Text('Мой магазин'),
                 selected: _selectedIndex == 0,
                 onTap: () => setPage(0),
               ),
-            if (_isAggregator || !_isAggregator) ...[
-              ListTile(
-                leading: const Icon(Icons.bar_chart),
-                title: const Text('Статистика'),
-                selected: _selectedIndex == 1,
-                onTap: () => setPage(1),
-              ),
-              ListTile(
-                leading: const Icon(Icons.calendar_month),
-                title: const Text('Акции'),
-                selected: _selectedIndex == 2,
-                onTap: () => setPage(2),
-              ),
             ],
+            ListTile(
+              leading: const Icon(Icons.bar_chart),
+              title: const Text('Статистика'),
+              selected: _selectedIndex == 1,
+              onTap: () => setPage(1),
+            ),
+            ListTile(
+              leading: const Icon(Icons.calendar_month),
+              title: const Text('Акции'),
+              selected: _selectedIndex == 2,
+              onTap: () => setPage(2),
+            ),
+            ListTile(
+              leading: const Icon(Icons.link),
+              title: const Text('Коллаборации'),
+              selected: _selectedIndex == 3,
+              onTap: () => setPage(3),
+            ),
+
+            // ---------- Только для админа платформы ----------
             if (_isAggregator) ...[
-              ListTile(
-                leading: const Icon(Icons.link),
-                title: const Text('Коллаборации'),
-                selected: _selectedIndex == 3,
-                onTap: () => setPage(3),
+              const Padding(
+                padding: EdgeInsets.fromLTRB(16, 16, 16, 8),
+                child: Text(
+                  'Управление платформой',
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                    color: Colors.grey,
+                    letterSpacing: 0.5,
+                  ),
+                ),
               ),
               ListTile(
                 leading: const Icon(Icons.campaign),
@@ -393,6 +404,12 @@ class _AdminScreenState extends State<AdminScreen> {
                 onTap: () => setPage(12),
               ),
             ],
+            ListTile(
+  leading: const Icon(Icons.edit_location_alt_outlined),
+  title: const Text('Редактор зон'),
+  selected: _selectedIndex == 14,
+  onTap: () => setPage(14),
+),
             ListTile(
               leading: const Icon(Icons.qr_code_scanner),
               title: const Text('Сканер бонусов'),

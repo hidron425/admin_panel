@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart' as supa;
 import 'screens/login_screen.dart';
 import 'screens/admin_screen.dart';
+import 'theme/admin_theme.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -19,7 +20,7 @@ class MyApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'Admin Panel',
-      theme: ThemeData(useMaterial3: true),
+      theme: buildAdminTheme(),
       home: StreamBuilder<supa.AuthState>(
         stream: supa.Supabase.instance.client.auth.onAuthStateChange,
         builder: (context, snapshot) {

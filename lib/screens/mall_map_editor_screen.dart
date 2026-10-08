@@ -648,7 +648,7 @@ class _MallMapEditorScreenState extends State<MallMapEditorScreen> {
                 icon: const Icon(Icons.save),
                 label: const Text('Сохранить все позиции'),
                 style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFF6C63FF),
+                  backgroundColor: const Color(0xFF2E7BFF),
                   foregroundColor: Colors.white,
                   padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 14),
                 ),

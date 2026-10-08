@@ -185,7 +185,7 @@ class _CmsScreenState extends State<CmsScreen> {
                     icon: const Icon(Icons.save),
                     label: const Text('Сохранить'),
                     style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFF6C63FF),
+                      backgroundColor: const Color(0xFF2E7BFF),
                       foregroundColor: Colors.white,
                     ),
                   ),
